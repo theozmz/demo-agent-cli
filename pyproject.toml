@@ -1,0 +1,37 @@
+[project]
+name = "harness"
+description = "AI coding agent CLI — secure, high-performance, local-first"
+requires-python = ">=3.12"
+version = "0.1.0"
+
+dependencies = [
+    "pydantic>=2.0",
+    "litellm>=1.50.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "pyahocorasick",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.14.0",
+]
+
+[project.scripts]
+harness = "harness.cli.app:main"
+
+[build-system]
+requires = ["setuptools>=68", "setuptools_scm[toml]>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools_scm]

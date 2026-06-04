@@ -1,0 +1,24 @@
+# Harness default configuration
+
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-6-20250514"
+fallback_model = "claude-haiku-3-5-20251001"
+max_tokens = 8192
+
+[loop]
+engine = "native"
+max_turns = 30
+compaction_threshold = 0.80
+
+[sandbox]
+runtime = "docker"
+
+[repomap]
+enabled = false
+
+[cache]
+warm_enabled = false
+
+[observability]
+backend = "none"
