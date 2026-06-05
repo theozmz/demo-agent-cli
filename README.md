@@ -1,120 +1,184 @@
 # Harness
 
-AI coding agent CLI — secure, high-performance, local-first. Written in Python.
+**AI coding agent CLI — secure, high-performance, local-first.**
 
-## Quick Start
+Harness is an AI-powered coding agent that lives in your terminal. It reads, writes, and executes code inside a sandboxed environment, driven by any LLM provider through LiteLLM.
+
+---
+
+## Quickstart
 
 ```bash
-# Install
-uv pip install -e .
+# 1. Install
+pip install -e .
 
-# Set your API key
-export ANTHROPIC_API_KEY="sk-ant-..."
+# 2. Configure your LLM
+cp harness.toml harness.local.toml
+# Edit harness.local.toml — set provider, model, api_key, api_base
 
-# Run a prompt
-harness run "write hello world in python"
-
-# Or use python -m
-python -m harness run "explain this code"
+# 3. Run a task
+harness run "create a Python script that prints the current time"
 ```
 
-## Configuration
+Or enter interactive mode (REPL):
 
-Harness loads configuration from `harness.toml` (current directory or `~/.harness/harness.toml`).
-
-Minimal config:
-```toml
-[llm]
-provider = "anthropic"
-model = "claude-sonnet-4-6-20250514"
-```
-
-All providers supported via [LiteLLM](https://github.com/BerriAI/litellm). Set the corresponding `*_API_KEY` env var:
-- Anthropic: `ANTHROPIC_API_KEY`
-- OpenAI: `OPENAI_API_KEY`
-- Groq: `GROQ_API_KEY`
-- OpenRouter: `OPENROUTER_API_KEY`
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `harness run "..."` | Send a one-shot prompt to the agent |
-| `harness doctor` | Check system health and configuration |
-
-Global flags (`-c`/`--config`, `-d`/`--debug`) go before the subcommand:
 ```bash
-harness -d run "hello"         # debug mode
-harness -c custom.toml run "x"  # custom config
+harness
+# > read the file src/harness/core/loop.py and summarize the agent loop
 ```
+
+### Windows one-click setup
+
+```cmd
+git clone <repo> && cd python && setup.bat
+```
+
+Edit the generated `harness.local.toml` with your API key, then run `.venv\Scripts\harness.exe`.
+
+---
 
 ## Architecture
 
 ```
-Presentation (CLI) → Application (AgenticLoop) → Domain (Tools/Safety/Memory) → Infra (LLM/Sandbox)
+┌─────────────────────────────────────────────────┐
+│  Presentation                                   │
+│  CLI (argparse) → REPL (prompt_toolkit)         │
+│  TUI (Textual) → Rich Markdown output           │
+├─────────────────────────────────────────────────┤
+│  Application                                    │
+│  AgenticLoop → ChatDelegate → CompactionEngine  │
+│  ContextGatherer → RepoMap → SafetyLayer        │
+├─────────────────────────────────────────────────┤
+│  Domain                                         │
+│  Tool ABC → ToolExecutor → PermissionPolicy     │
+│  LlmClient ABC → SandboxRuntime ABC             │
+│  MemoryStore → Session/Turn/Thread models       │
+├─────────────────────────────────────────────────┤
+│  Infrastructure                                 │
+│  LiteLLM provider → Docker sandbox              │
+│  tree-sitter → SQLite → prompt_toolkit          │
+└─────────────────────────────────────────────────┘
 ```
 
-See [DESIGN.md](DESIGN.md) for the complete architecture specification.
+### Agent Loop (Query → LLM → Tools → Observe → Repeat)
 
-## Development
-
-```bash
-# Install with dev dependencies
-uv pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Run a specific test file
-pytest tests/test_tools.py -v
 ```
+User prompt
+  │
+  ▼
+ContextGatherer ──► System prompt (tools + repomap + memory)
+  │
+  ▼
+┌─ AgenticLoop ───────────────────────────────────┐
+│                                                 │
+│  1. call_llm() ──► LLM response                 │
+│  2. if tool_calls: execute tools, append results │
+│  3. if text: return to user                      │
+│  4. compaction check (MICRO / REACTIVE)          │
+│  5. repeat (max 30 turns)                        │
+│                                                 │
+│  Real-time events: thinking → tool_call →       │
+│  tool_result → retry → done                      │
+└─────────────────────────────────────────────────┘
+  │
+  ▼
+Rich Markdown output + JSONL session log
+```
+
+---
+
+## Technical Details
+
+### LLM Providers (LiteLLM)
+Multi-provider support: Anthropic, OpenAI, DeepSeek, Groq, OpenRouter, Ollama. Configure via `harness.toml` `[llm]` section. Secrets in `harness.local.toml` (git-ignored). Env var overrides: `HARNESS_MODEL`, `HARNESS_PROVIDER`.
+
+### Tool System (12 built-in tools)
+| Category | Tools |
+|----------|-------|
+| File I/O | `file_read`, `file_write`, `file_edit` |
+| Search | `glob_search`, `grep_search` (ripgrep) |
+| Web | `web_fetch`, `web_search` |
+| Execution | `bash_exec` (Docker sandbox or NoOp) |
+| Memory | `memory_read`, `memory_write`, `memory_delete` |
+| Agent | `agent` (sub-agent delegation) |
+
+Every tool call goes through a 6-step pipeline: **lookup → validate (JSON Schema) → permission check → execute → safety scan → log**.
+
+### Sandbox
+- **Docker**: Containers with `read_only` rootfs, no network, no capabilities, 512MB memory limit, UID 1000.
+- **NoOp fallback**: Runs on host when Docker unavailable (dev/testing only).
+
+### Memory (SQLite)
+Persistent key-value store at `~/.harness/memory.db`. WAL mode for multi-process safety. Agent tools allow read/write/delete. Planned: auto-inject relevant memories into system prompt.
+
+### RepoMap (tree-sitter + PageRank)
+Optional repository structure map injected into system prompt. Uses `tree-sitter-language-pack` to parse code into tags (classes, functions, methods), ranks files by PageRank on import graph, fits top files under token budget.
+
+### Context Compaction
+Two-tier strategy to prevent token overflow:
+- **MICRO** (>80% tokens): stub old read-only tool results with `[stub: ... N chars]`
+- **REACTIVE** (>90% tokens): drop all but last 5 turns, inject truncation notice
+- **TruncationTracker**: stops after 3 consecutive compactions to prevent thrashing
+
+### LLM Retry
+3 retries with exponential backoff (1s → 3s → 7s). Retries on transient errors (timeout, connection, rate limit, 5xx). Fails fast on permanent errors (auth, bad request).
+
+### Workspace Isolation
+`-w / --workspace` flag restricts all file tool access to a directory. Attempts to read/write outside the workspace are blocked with an error. Path resolution: relative paths resolve against workspace root.
+
+### Task Logging
+Each session writes a structured JSONL log to `logs/<session_id>.jsonl`. Events: `task_start`, `context`, `llm_call`, `tool_call`, `memory_op`, `task_end`. Sensitive params (api_key, password, token) are redacted.
+
+### Commands
+| Command | Description |
+|---------|-------------|
+| `harness` | Interactive REPL (default) |
+| `harness run "prompt"` | One-shot task |
+| `harness repl` | Explicit REPL |
+| `harness tui` | Full-screen Textual TUI |
+| `harness doctor` | System health check |
+
+Global flags: `-c/--config PATH`, `-d/--debug`. Run flags: `-p/--provider`, `-m/--model`, `-n/--max-turns`, `-r/--repomap`, `-w/--workspace`.
+
+---
+
+## Highlights
+
+- **Multi-provider**: One interface, any LLM. No vendor lock-in.
+- **Docker sandbox**: Real container isolation for code execution.
+- **Real-time progress**: See thinking, tool calls, and results as they happen.
+- **Session logging**: Every LLM call and tool execution is recorded as structured JSONL.
+- **Subprocess REPL**: Each task runs as a subprocess — crash isolation, never lose your session.
+- **Workspace boundaries**: Restrict agent file access to a specific directory.
+- **Compaction + Retry**: Handles long conversations and transient LLM failures gracefully.
+- **Extensible tools**: Clean ABC-based tool system. Add new tools by subclassing `Tool`.
+- **Config layering**: `harness.toml` (shared) + `harness.local.toml` (secrets, git-ignored).
+
+---
 
 ## Project Structure
 
 ```
-src/harness/
-├── cli/          # CLI layer (argparse subcommands)
-├── config/       # Config system (Pydantic + TOML)
-├── core/         # Agentic loop, context, session
-├── llm/          # LLM client ABC + providers (LiteLLM)
-├── safety/       # Sanitizer, leak detector, pipeline
-└── tools/        # Tool ABC, registry, executor, builtins
+python/
+├── src/harness/
+│   ├── cli/           # CLI entry, REPL, TUI, commands
+│   ├── config/        # Pydantic config models
+│   ├── core/          # Agent loop, compaction, context, session
+│   ├── llm/           # LLM client ABC + LiteLLM provider
+│   ├── tools/         # Tool ABC, executor, permissions, 12 built-ins
+│   │   └── sandbox/   # Docker + NoOp runtimes
+│   ├── memory/        # SQLite MemoryStore
+│   ├── repomap/       # tree-sitter tag extraction + PageRank ranking
+│   ├── safety/        # Output scanning + leak detection
+│   └── logging/       # Structured JSONL task logger
+├── tests/             # pytest test suite
+├── harness.toml        # Shared config (committed)
+├── harness.local.toml  # Secrets (git-ignored)
+└── pyproject.toml     # Build + dependency config
 ```
 
-## Roadmap
-
-- [x] Phase 1: Config + LLM + Tools + Core Loop + CLI (~28 files)
-- [ ] Phase 2: Compaction + SubAgent + REPL
-- [ ] Phase 3: RepoMap (tree-sitter + PageRank)
-- [ ] Phase 4: Docker sandbox + MCP
-- [ ] Phase 5: TUI + E2E tests
+---
 
 ## License
 
 MIT
-
----
-
-按时间由近到远的顺序，记录开发日志，需要包含：1.所有改动。2.需要强调和注意的点。
-
-## 2026-06-05 — Phase 1 Build
-
-### 改动
-- 创建 pyproject.toml (uv/setuptools 构建, litellm 多 provider)
-- 创建 harness.toml 默认配置
-- 实现 config 层 (Pydantic BaseModel, TOML + env var 加载)
-- 实现 llm 层 (LlmClient ABC, LiteLlmProvider via litellm)
-- 实现 safety 层 (Sanitizer ahocorasick + LeakDetector regex + SafetyLayer pipeline)
-- 实现 tools 层 (Tool ABC, ToolRegistry with cache-stable ordering, ToolExecutor 6-step pipeline, PermissionPolicy)
-- 实现 3 个内置工具: file_read, file_write, glob_search
-- 实现 core 层 (AgenticLoop 状态机, ChatDelegate, ContextGatherer, Session/Thread/Turn 数据模型)
-- 实现 cli 层 (typer app: 'prompt' and 'doctor' commands)
-- 实现错误分类体系 (HarnessError → LlmError/ToolError/SafetyError/...)
-- 编写测试: test_config, test_tools (10 tests), test_loop (2 tests)
-- 更新 README.md (安装说明、架构概览、开发指南)
-
-### 注意事项
-- LiteLLM 按模型名自动路由到对应 provider (claude-sonnet-4-6 → Anthropic, gpt-4o → OpenAI)
-- ToolRegistry 保持内置工具在前作为连续前缀，保证 prompt cache 稳定性
-- SafetyLayer 仅扫描 tool output，不阻断 — 阻断逻辑由 ToolExecutor 决定
-- AgenticLoop 支持 tool_calls 循环 + text response 退出，max_turns 保护

@@ -17,12 +17,20 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+import uuid
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from harness.cli.context import AppContext
 from harness.cli.commands.run import add_run_subparser
 from harness.cli.commands.doctor import add_doctor_subparser
 from harness.cli.commands.repl import add_repl_subparser
 from harness.cli.commands.tui import add_tui_subparser
 
+console = Console()
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +42,37 @@ def _setup_logging(debug: bool = False) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+
+
+def _show_banner(ctx: AppContext) -> None:
+    """Print a stylish welcome banner with config summary."""
+    session_id = str(uuid.uuid4())[:8]
+
+    title = Text("🛠️  H A R N E S S", style="bold cyan")
+    subtitle = Text("AI Coding Agent CLI — v0.1.0", style="dim")
+
+    info = Table(show_header=False, box=None, padding=(0, 2))
+    info.add_column(style="dim", width=12)
+    info.add_column(style="white")
+    info.add_row("Workdir:", ctx.cwd)
+    info.add_row(
+        "Provider:",
+        f"{ctx.config.llm.provider} ({ctx.config.llm.model})",
+    )
+    info.add_row("MaxTurns:", str(ctx.config.loop.max_turns))
+    sandbox_info = ctx.config.sandbox.runtime
+    info.add_row("Sandbox:", sandbox_info)
+    info.add_row("Session:", session_id)
+
+    content = Table.grid(padding=(0, 0))
+    content.add_row(title)
+    content.add_row(subtitle)
+    content.add_row("")
+    content.add_row(info)
+
+    panel = Panel(content, border_style="cyan", padding=(1, 2))
+    console.print(panel)
+    console.print("")
 
 
 def _shared_flags() -> argparse.ArgumentParser:
@@ -100,6 +139,11 @@ def main() -> None:
         repomap_override=repomap_override,
         debug=args.debug,
     )
+
+    # ---- Interactive banner ----
+    is_interactive = args.command in (None, "repl", "tui")
+    if is_interactive and sys.stdout.isatty():
+        _show_banner(ctx)
 
     # ---- Dispatch ----
     dispatch_func = getattr(args, "func", None)
