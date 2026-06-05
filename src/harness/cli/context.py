@@ -97,7 +97,9 @@ class AppContext:
         if bash_exec_tool is not None:
             bash_exec_tool.wire_sandbox(sandbox)
 
-        executor = ToolExecutor(registry=registry, safety=safety, sandbox=sandbox)
+        executor = ToolExecutor(
+            registry=registry, safety=safety, sandbox=sandbox,
+        )
 
         # MCP tool discovery (non-blocking — runs in background)
         mcp_mgr = McpClientManager()

@@ -48,6 +48,9 @@ traces/
 .cache/
 *.pyc
 
+# === Task logs ===
+logs/
+
 # === Testing ===
 .pytest_cache/
 .coverage

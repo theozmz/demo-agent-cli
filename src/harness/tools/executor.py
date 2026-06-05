@@ -5,14 +5,25 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from harness.tools.tool import Tool, ToolContext, ToolOutput, ToolDomain
 from harness.tools.registry import ToolRegistry
 from harness.tools.permissions import PermissionPolicy, ApprovalContext, PermissionOutcome
 from harness.core.errors import ToolNotFoundError, InvalidParametersError, NotAuthorizedError, ToolError
 
+if TYPE_CHECKING:
+    from harness.logging.task_logger import TaskLogger
+
 logger = logging.getLogger(__name__)
+
+
+def _truncate_for_log(text: str, max_len: int = 300) -> str:
+    """Truncate a string for logging."""
+    text = text or ""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + f"...<truncated {len(text) - max_len} chars>"
 
 
 class ToolExecutor:
@@ -83,6 +94,17 @@ class ToolExecutor:
         sensitive = getattr(tool, "sensitive_params", set())
         safe_params = {k: v for k, v in params.items() if k not in sensitive}
         logger.debug(f"Tool '{tool_name}' completed in {duration_ms:.0f}ms")
+
+        if ctx.task_logger:
+            ctx.task_logger.log_tool_call(
+                tool_name=tool_name,
+                params=safe_params,
+                is_error=output.is_error,
+                exit_code=getattr(output, "exit_code", 0),
+                result_summary=_truncate_for_log(output.content),
+                duration_ms=duration_ms,
+            )
+
         return output
 
     def _validate_params(self, tool: Tool, params: dict[str, Any]):

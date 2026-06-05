@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from harness.llm.types import ChatMessage, ToolCall
 from harness.llm.client import LlmClient
@@ -18,6 +19,9 @@ from harness.core.loop_delegate import (
 from harness.core.context import ContextGatherer
 from harness.core.compaction import CompactionEngine, TruncationTracker
 from harness.core.errors import MaxTurnsReachedError
+
+if TYPE_CHECKING:
+    from harness.logging.task_logger import TaskLogger
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +38,21 @@ class LoopConfig:
 class ChatDelegate(LoopDelegate):
     """Standard interactive chat delegate — calls LLM, executes tools, returns text."""
 
-    def __init__(self, llm: LlmClient, tool_executor: ToolExecutor, gatherer: ContextGatherer):
+    def __init__(
+        self,
+        llm: LlmClient,
+        tool_executor: ToolExecutor,
+        gatherer: ContextGatherer,
+        task_logger: "TaskLogger | None" = None,
+    ):
         self._llm = llm
         self._tools = tool_executor
         self._gatherer = gatherer
         self._signal: LoopSignal = LoopSignal.NONE
+        self._task_logger = task_logger
+        # Set by the caller before each task
+        self._session_id: str = ""
+        self._workspace_root: str = ""
 
     async def check_signals(self) -> LoopSignal:
         return self._signal
@@ -48,11 +62,40 @@ class ChatDelegate(LoopDelegate):
 
     async def call_llm(self, ctx: LoopContext, iteration: int) -> "LlmResponse":  # type: ignore[override]
         tools = ctx.tool_registry.get_schemas() if ctx.tool_registry and not ctx.force_text else None
-        return await self._llm.generate(
-            messages=ctx.messages,
-            tools=tools,
-            system_prompt=ctx.system_prompt,
-        )
+        llm_start = time.monotonic()
+        try:
+            response = await self._llm.generate(
+                messages=ctx.messages,
+                tools=tools,
+                system_prompt=ctx.system_prompt,
+            )
+            duration_ms = (time.monotonic() - llm_start) * 1000
+            if self._task_logger:
+                usage = response.usage
+                self._task_logger.log_llm_call(
+                    model=getattr(self._llm, "model", ""),
+                    provider=getattr(self._llm, "provider", ""),
+                    messages_count=len(ctx.messages),
+                    has_tools=tools is not None and len(tools) > 0,
+                    response_type="tool_calls" if response.tool_calls else "text",
+                    tokens_input=usage.input_tokens if usage else 0,
+                    tokens_output=usage.output_tokens if usage else 0,
+                    duration_ms=duration_ms,
+                    iteration=iteration,
+                )
+            return response
+        except Exception as exc:
+            duration_ms = (time.monotonic() - llm_start) * 1000
+            if self._task_logger:
+                self._task_logger.log_llm_call(
+                    model=getattr(self._llm, "model", ""),
+                    messages_count=len(ctx.messages),
+                    response_type="error",
+                    duration_ms=duration_ms,
+                    iteration=iteration,
+                    error=str(exc),
+                )
+            raise
 
     async def handle_text_response(self, text: str, ctx: LoopContext) -> TextAction:
         return TextAction.RETURN
@@ -61,7 +104,13 @@ class ChatDelegate(LoopDelegate):
         if not ctx.tool_registry:
             return None
 
-        tool_ctx = ToolContext(cwd=ctx.cwd, session_id="", turn_id="")
+        tool_ctx = ToolContext(
+            cwd=ctx.cwd,
+            session_id=self._session_id,
+            turn_id="",
+            workspace_root=self._workspace_root,
+            task_logger=self._task_logger,
+        )
         for tc in tool_calls:
             try:
                 output = await self._tools.execute(tc.name, tc.input, tool_ctx)
@@ -72,6 +121,12 @@ class ChatDelegate(LoopDelegate):
                     is_error=output.is_error,
                 ))
             except Exception as e:
+                if self._task_logger:
+                    self._task_logger.log_error(
+                        source="tool",
+                        message=str(e),
+                        tool_name=tc.name,
+                    )
                 ctx.messages.append(ChatMessage.tool_result(
                     tool_call_id=tc.id,
                     content=str(e),

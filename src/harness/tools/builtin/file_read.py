@@ -41,7 +41,10 @@ class FileReadTool(Tool):
         return ApprovalRequirement.NEVER
 
     async def execute(self, params: dict[str, Any], ctx: ToolContext) -> ToolOutput:
-        path = Path(params["file_path"]).resolve()
+        try:
+            path = self._resolve_path(params["file_path"], ctx)
+        except ValueError as e:
+            return ToolOutput(content=f"Error: {e}", is_error=True)
         if not path.exists():
             return ToolOutput(content=f"Error: File not found: {path}", is_error=True)
         if path.is_dir():

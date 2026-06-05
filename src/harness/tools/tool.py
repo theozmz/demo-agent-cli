@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from pathlib import Path
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from harness.logging.task_logger import TaskLogger
 
 
 class ToolDomain(Enum):
@@ -37,6 +41,8 @@ class ToolContext:
     cwd: str = ""
     session_id: str = ""
     turn_id: str = ""
+    workspace_root: str = ""
+    task_logger: "TaskLogger | None" = None
 
 
 class Tool(ABC):
@@ -51,6 +57,38 @@ class Tool(ABC):
     domain: ToolDomain = ToolDomain.ORCHESTRATOR
     timeout_seconds: int = 30
     sensitive_params: set[str] = set()
+
+    # ------------------------------------------------------------------
+    # Path resolution with workspace boundary enforcement
+    # ------------------------------------------------------------------
+
+    def _resolve_path(self, path_str: str, ctx: ToolContext) -> Path:
+        """Resolve a file path and enforce workspace boundary.
+
+        1. Relative paths are resolved against *ctx.cwd*.
+        2. If *ctx.workspace_root* is set, the resolved path must be
+           inside it — otherwise a ``ValueError`` is raised.
+        """
+        p = Path(path_str)
+        if not p.is_absolute():
+            p = Path(ctx.cwd) / p
+        resolved = p.resolve()
+
+        if ctx.workspace_root:
+            ws = Path(ctx.workspace_root).resolve()
+            try:
+                resolved.relative_to(ws)
+            except ValueError:
+                raise ValueError(
+                    f"Path '{resolved}' is outside workspace '{ws}'. "
+                    f"Access denied."
+                )
+
+        return resolved
+
+    # ------------------------------------------------------------------
+    # Abstract interface
+    # ------------------------------------------------------------------
 
     @property
     @abstractmethod

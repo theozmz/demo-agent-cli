@@ -50,7 +50,10 @@ class FileEditTool(Tool):
         return ApprovalRequirement.UNLESS_AUTO
 
     async def execute(self, params: dict[str, Any], ctx: ToolContext) -> ToolOutput:
-        file_path = Path(params["file_path"]).resolve()
+        try:
+            file_path = self._resolve_path(params["file_path"], ctx)
+        except ValueError as e:
+            return ToolOutput(content=f"Error: {e}", is_error=True)
         old = params["old_string"]
         new = params["new_string"]
         replace_all = params.get("replace_all", False)

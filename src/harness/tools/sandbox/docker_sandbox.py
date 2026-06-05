@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 
 from harness.tools.sandbox.runtime import (
@@ -22,6 +23,10 @@ try:
 except ImportError:
     _HAS_DOCKER = False
 
+# Default timeout for sandbox operations (seconds)
+_CREATE_TIMEOUT = 120  # image pull can be slow
+_EXEC_TIMEOUT = 60
+
 
 class DockerSandbox(SandboxRuntime):
     """Sandbox backed by a local Docker daemon.
@@ -33,11 +38,26 @@ class DockerSandbox(SandboxRuntime):
     def __init__(self):
         if not _HAS_DOCKER:
             raise RuntimeError("docker Python SDK not installed. Run: pip install docker")
-        self._client = docker.from_env()
+        try:
+            self._client = docker.from_env()
+        except docker_errors.DockerException as exc:
+            raise RuntimeError(f"Cannot connect to Docker daemon: {exc}") from exc
 
+    # ------------------------------------------------------------------
+    # create
+    # ------------------------------------------------------------------
     async def create(self, image: str = "python:3.12-slim") -> str:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._create_sync, image)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, self._create_sync, image),
+                timeout=_CREATE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"Docker sandbox creation timed out after {_CREATE_TIMEOUT}s "
+                f"(image pull may be slow or network unavailable)"
+            )
 
     def _create_sync(self, image: str) -> str:
         try:
@@ -65,17 +85,35 @@ class DockerSandbox(SandboxRuntime):
         logger.info("Docker sandbox created: %s", container.id[:12])
         return container.id
 
+    # ------------------------------------------------------------------
+    # exec_cmd
+    # ------------------------------------------------------------------
     async def exec_cmd(
         self,
         container_id: str,
         command: str,
         *,
-        timeout: int = 60,
+        timeout: int = _EXEC_TIMEOUT,
         cwd: str = "/workspace",
         env: dict[str, str] | None = None,
     ) -> SandboxResult:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._exec_sync, container_id, command, timeout, cwd, env)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, self._exec_sync, container_id, command, timeout, cwd, env
+                ),
+                timeout=timeout + 5,  # give a grace margin over the docker-internal timeout
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Command timed out in container %s after %ds", container_id[:12], timeout
+            )
+            return SandboxResult(
+                stderr=f"Command timed out after {timeout}s",
+                exit_code=-1,
+                timed_out=True,
+            )
 
     def _exec_sync(
         self,
@@ -85,30 +123,53 @@ class DockerSandbox(SandboxRuntime):
         cwd: str,
         env: dict[str, str] | None,
     ) -> SandboxResult:
+        # Verify container exists and is running
         try:
             container = self._client.containers.get(container_id)
         except docker_errors.NotFound:
-            return SandboxResult(stderr=f"Container not found: {container_id}", exit_code=-1)
+            return SandboxResult(
+                stderr=f"Container not found: {container_id}", exit_code=-1
+            )
+
+        if container.status != "running":
+            return SandboxResult(
+                stderr=(
+                    f"Container {container_id[:12]} is not running "
+                    f"(status: {container.status})"
+                ),
+                exit_code=-1,
+            )
 
         start = time.monotonic()
         try:
-            exit_code, output = container.exec_run(
-                f"cd {cwd} && {command}",
+            exec_result = container.exec_run(
+                command,
                 environment=env or {},
                 user="1000",
                 workdir=cwd,
             )
             duration_ms = (time.monotonic() - start) * 1000
+
+            exit_code = exec_result.exit_code
+            output = exec_result.output
             text = output.decode("utf-8", errors="replace") if output else ""
             return SandboxResult(
                 stdout=text,
                 stderr="",
-                exit_code=exit_code or 0,
+                exit_code=exit_code if exit_code is not None else 0,
                 duration_ms=duration_ms,
             )
-        except Exception as e:
-            return SandboxResult(stderr=str(e), exit_code=-1)
+        except docker_errors.APIError as exc:
+            logger.error("Docker exec failed in %s: %s", container_id[:12], exc)
+            return SandboxResult(
+                stderr=str(exc),
+                exit_code=-1,
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
 
+    # ------------------------------------------------------------------
+    # destroy
+    # ------------------------------------------------------------------
     async def destroy(self, container_id: str) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._destroy_sync, container_id)
@@ -119,8 +180,13 @@ class DockerSandbox(SandboxRuntime):
             container.stop(timeout=5)
             logger.info("Docker sandbox destroyed: %s", container_id[:12])
         except docker_errors.NotFound:
-            pass
+            logger.debug("Container already gone: %s", container_id[:12])
+        except docker_errors.APIError as exc:
+            logger.warning("Error destroying container %s: %s", container_id[:12], exc)
 
+    # ------------------------------------------------------------------
+    # state
+    # ------------------------------------------------------------------
     async def state(self, container_id: str) -> SandboxState:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._state_sync, container_id)
@@ -138,3 +204,6 @@ class DockerSandbox(SandboxRuntime):
             return SandboxState.FAILED
         except docker_errors.NotFound:
             return SandboxState.TERMINATED
+        except docker_errors.APIError as exc:
+            logger.warning("Error querying container %s: %s", container_id[:12], exc)
+            return SandboxState.FAILED

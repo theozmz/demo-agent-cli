@@ -28,6 +28,19 @@ class BashExecTool(Tool):
         """Inject the sandbox runtime (called during init)."""
         self._sandbox = sandbox
 
+    async def cleanup(self) -> None:
+        """Destroy the sandbox container if one was created.
+
+        Call this when the session ends to prevent resource leaks.
+        """
+        if self._container_id is not None and self._sandbox is not None:
+            try:
+                await self._sandbox.destroy(self._container_id)
+            except Exception as exc:
+                logger.warning("Failed to destroy sandbox container: %s", exc)
+            finally:
+                self._container_id = None
+
     @property
     def input_schema(self) -> dict[str, Any]:
         return {
@@ -72,6 +85,20 @@ class BashExecTool(Tool):
                 self._container_id = await self._sandbox.create()
             except Exception as e:
                 return ToolOutput(content=f"Error creating sandbox: {e}", is_error=True)
+
+        # Verify container is still healthy (recreate if needed)
+        try:
+            state = await self._sandbox.state(self._container_id)
+            if state.value in ("terminated", "failed"):
+                logger.warning(
+                    "Sandbox container %s is %s — recreating",
+                    self._container_id[:12], state.value,
+                )
+                self._container_id = await self._sandbox.create()
+        except Exception:
+            # state query failed — try to recreate
+            logger.warning("Sandbox state query failed — recreating container")
+            self._container_id = await self._sandbox.create()
 
         try:
             result = await self._sandbox.exec_cmd(

@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         title="commands",
         help="Available commands",
     )
-    subparsers.required = True
+    # Subcommands are optional — default to REPL when none given
 
     shared = _shared_flags()
     add_run_subparser(subparsers, shared)
@@ -104,10 +104,12 @@ def main() -> None:
     # ---- Dispatch ----
     dispatch_func = getattr(args, "func", None)
     if dispatch_func is None:
-        parser.print_help()
-        sys.exit(1)
+        # No subcommand — default to REPL
+        from harness.cli.commands.repl import handle_repl
 
-    dispatch_func(args, ctx)
+        handle_repl(ctx=ctx, debug=args.debug)
+    else:
+        dispatch_func(args, ctx)
 
 
 if __name__ == "__main__":

@@ -60,7 +60,10 @@ class GrepSearchTool(Tool):
 
     async def execute(self, params: dict[str, Any], ctx: ToolContext) -> ToolOutput:
         pattern = params["pattern"]
-        root = Path(params.get("path", ctx.cwd or ".")).resolve()
+        try:
+            root = self._resolve_path(params.get("path", ctx.cwd or "."), ctx)
+        except ValueError as e:
+            return ToolOutput(content=f"Error: {e}", is_error=True)
         if not root.exists():
             return ToolOutput(content=f"Error: Path not found: {root}", is_error=True)
 

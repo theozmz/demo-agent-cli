@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -70,6 +71,9 @@ class NoOpSandbox(SandboxRuntime):
     development and testing only.
     """
 
+    def __init__(self):
+        self._cwd = os.getcwd()
+
     async def create(self, image: str = "python:3.12-slim") -> str:
         logger.warning("NoOpSandbox: commands will run on HOST (no isolation)")
         return "noop-1"
@@ -80,18 +84,22 @@ class NoOpSandbox(SandboxRuntime):
         command: str,
         *,
         timeout: int = 60,
-        cwd: str = "/workspace",
+        cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> SandboxResult:
         import asyncio
-        import os
+
+        # Resolve working directory: explicit → host cwd
+        workdir = cwd or self._cwd
+        if not os.path.isdir(workdir):
+            workdir = self._cwd
 
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=cwd if os.path.isdir(cwd) else None,
+                cwd=workdir,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return SandboxResult(
@@ -100,6 +108,8 @@ class NoOpSandbox(SandboxRuntime):
                 exit_code=proc.returncode or 0,
             )
         except asyncio.TimeoutError:
+            if proc.returncode is None:
+                proc.kill()
             return SandboxResult(stdout="", stderr="Command timed out.", exit_code=-1, timed_out=True)
 
     async def destroy(self, container_id: str) -> None:
@@ -119,6 +129,8 @@ def get_sandbox_runtime(config_runtime: str = "docker") -> SandboxRuntime:
             from harness.tools.sandbox.docker_sandbox import DockerSandbox
 
             return DockerSandbox()
-        except Exception:
-            logger.warning("Docker unavailable — falling back to NoOpSandbox")
+        except (ImportError, RuntimeError) as exc:
+            logger.warning(
+                "Docker unavailable — falling back to NoOpSandbox (%s)", exc
+            )
     return NoOpSandbox()

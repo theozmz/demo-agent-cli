@@ -37,7 +37,10 @@ class GlobSearchTool(Tool):
         return ApprovalRequirement.NEVER
 
     async def execute(self, params: dict[str, Any], ctx: ToolContext) -> ToolOutput:
-        root = Path(params.get("path", ctx.cwd or ".")).resolve()
+        try:
+            root = self._resolve_path(params.get("path", ctx.cwd or "."), ctx)
+        except ValueError as e:
+            return ToolOutput(content=f"Error: {e}", is_error=True)
         pattern = params["pattern"]
 
         if not root.exists():

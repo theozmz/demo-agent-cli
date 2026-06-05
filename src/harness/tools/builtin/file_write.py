@@ -37,7 +37,10 @@ class FileWriteTool(Tool):
         return ApprovalRequirement.UNLESS_AUTO
 
     async def execute(self, params: dict[str, Any], ctx: ToolContext) -> ToolOutput:
-        path = Path(params["file_path"]).resolve()
+        try:
+            path = self._resolve_path(params["file_path"], ctx)
+        except ValueError as e:
+            return ToolOutput(content=f"Error: {e}", is_error=True)
         content = params["content"]
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
