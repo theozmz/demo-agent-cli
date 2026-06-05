@@ -12,10 +12,10 @@ uv pip install -e .
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Run a prompt
-harness prompt "write hello world in python"
+harness run "write hello world in python"
 
 # Or use python -m
-python -m harness prompt "explain this code"
+python -m harness run "explain this code"
 ```
 
 ## Configuration
@@ -33,14 +33,20 @@ All providers supported via [LiteLLM](https://github.com/BerriAI/litellm). Set t
 - Anthropic: `ANTHROPIC_API_KEY`
 - OpenAI: `OPENAI_API_KEY`
 - Groq: `GROQ_API_KEY`
-- DeepSeek: `DEEPSEEK_API_KEY`
+- OpenRouter: `OPENROUTER_API_KEY`
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `harness prompt "..."` | Send a one-shot prompt to the agent |
+| `harness run "..."` | Send a one-shot prompt to the agent |
 | `harness doctor` | Check system health and configuration |
+
+Global flags (`-c`/`--config`, `-d`/`--debug`) go before the subcommand:
+```bash
+harness -d run "hello"         # debug mode
+harness -c custom.toml run "x"  # custom config
+```
 
 ## Architecture
 
@@ -67,7 +73,7 @@ pytest tests/test_tools.py -v
 
 ```
 src/harness/
-├── cli/          # CLI layer (typer)
+├── cli/          # CLI layer (argparse subcommands)
 ├── config/       # Config system (Pydantic + TOML)
 ├── core/         # Agentic loop, context, session
 ├── llm/          # LLM client ABC + providers (LiteLLM)

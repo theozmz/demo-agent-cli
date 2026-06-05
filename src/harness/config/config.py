@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 
 class LlmConfig(BaseModel):
-    """LLM provider configuration."""
+    """LLM provider configuration — api_key / api_base live in harness.toml."""
 
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-6-20250514"
@@ -68,7 +68,7 @@ class Config(BaseModel):
 
     @classmethod
     def load(cls, path: str | None = None) -> "Config":
-        """Load config from harness.toml, with env var overrides."""
+        """Load config from harness.toml, with optional env-var overrides."""
         if path is None:
             path = cls._find_config()
         data: dict = {}
@@ -80,11 +80,10 @@ class Config(BaseModel):
         return config
 
     def _apply_env_overrides(self):
-        """Apply environment variable overrides."""
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            self.llm.api_key = os.environ["ANTHROPIC_API_KEY"]
-        if os.environ.get("OPENAI_API_KEY") and self.llm.provider == "openai":
-            self.llm.api_key = os.environ["OPENAI_API_KEY"]
+        """Minimal env-var overrides for model / provider only.
+
+        api_key and api_base are read exclusively from harness.toml.
+        """
         if os.environ.get("HARNESS_MODEL"):
             self.llm.model = os.environ["HARNESS_MODEL"]
         if os.environ.get("HARNESS_PROVIDER"):

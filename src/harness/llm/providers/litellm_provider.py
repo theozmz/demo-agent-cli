@@ -29,10 +29,23 @@ class LiteLlmProvider(LlmClient):
     OPENAI_API_KEY, etc.) by litellm automatically.
     """
 
-    def __init__(self, model: str = "claude-sonnet-4-6-20250514", api_key: str = "", api_base: str = ""):
-        self.model = model
+    def __init__(
+        self,
+        model: str = "claude-sonnet-4-6-20250514",
+        api_key: str = "",
+        api_base: str = "",
+        provider: str = "",
+    ):
         self.api_key = api_key
         self.api_base = api_base
+        # Build the litellm model identifier.  When the model name
+        # does not already carry a provider prefix (e.g. "deepseek/"
+        # or "groq/") we prepend the configured provider so litellm
+        # knows how to route the request.
+        if provider and "/" not in model:
+            self.model = f"{provider}/{model}"
+        else:
+            self.model = model
 
     async def generate(
         self,

@@ -2,9 +2,10 @@
 
 [llm]
 provider = "anthropic"
-model = "claude-sonnet-4-6-20250514"
-fallback_model = "claude-haiku-3-5-20251001"
-max_tokens = 8192
+model = "deepseek-v4-pro"
+fallback_model = "deepseek-v4-flash"
+api_key = "sk-0409535e41b1423a97051052413c9e34"       # 直接写在这里，优先于环境变量
+api_base = "https://api.deepseek.com/anthropic"      # 自定义 API 端点（代理/私有部署）
 
 [loop]
 engine = "native"

@@ -38,8 +38,13 @@ class ChatMessage:
 
     @classmethod
     def tool_result(cls, tool_call_id: str, content: str, name: str = "", is_error: bool = False) -> "ChatMessage":
+        """Create a tool result message (OpenAI-style role='tool').
+
+        Litellm translates this to the native format of whichever
+        provider is configured (e.g. Anthropic user/tool_result blocks).
+        """
         prefix = "Error: " if is_error else ""
-        return cls(role="user", content=prefix + content, tool_call_id=tool_call_id, name=name)
+        return cls(role="tool", content=prefix + content, tool_call_id=tool_call_id, name=name)
 
 
 @dataclass
