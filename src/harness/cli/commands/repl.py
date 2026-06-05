@@ -192,7 +192,7 @@ async def _repl_loop(
 # ---------------------------------------------------------------------------
 def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
     """Fallback REPL that runs the agent loop in-process."""
-    from harness.core.loop import AgenticLoop, ChatDelegate, LoopConfig
+    from harness.core.loop import AgenticLoop, ChatDelegate, LoopConfig, LoopEvent
     from harness.core.loop_delegate import LoopContext
 
     messages: list[ChatMessage] = []
@@ -227,6 +227,28 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
         session_id = str(uuid.uuid4())
         task_logger = TaskLogger(session_id=session_id)
 
+        # Real-time progress display (with truncation)
+        def _on_repl_event(ev: LoopEvent) -> None:
+            if ev.kind == "thinking":
+                console.print(f"[dim]Turn {ev.iteration} — thinking...[/dim]")
+            elif ev.kind == "retry":
+                console.print(
+                    f"[yellow]Retry {ev.retry_attempt}: "
+                    f"{ev.retry_error[:100]}[/yellow]"
+                )
+            elif ev.kind == "tool_call":
+                p = ev.tool_input or {}
+                params_str = ", ".join(
+                    f"{k}={str(v)[:50]}" for k, v in list(p.items())[:3]
+                )
+                console.print(f"[cyan]→ {ev.tool_name}({params_str})[/cyan]")
+            elif ev.kind == "tool_result":
+                output = ev.tool_output
+                if len(output) > 400:
+                    output = output[:400] + f"\n...<truncated {len(ev.tool_output) - 400} chars>"
+                style = "red" if ev.tool_error else ""
+                console.print(f"  {output}", style=style)
+
         delegate = ChatDelegate(
             llm=ctx.llm,
             tool_executor=ctx.tool_executor,
@@ -258,13 +280,24 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
 
         start = time.monotonic()
         try:
-            outcome = asyncio.run(asyncio.wait_for(loop.run(), timeout=300))
+            outcome = asyncio.run(
+                asyncio.wait_for(loop.run(on_event=_on_repl_event), timeout=300)
+            )
         except asyncio.TimeoutError:
             console.print("[yellow]Turn timed out after 5 minutes.[/yellow]")
             task_logger.log_task_end(
                 outcome="timeout",
                 total_duration_ms=(time.monotonic() - start) * 1000,
                 error="Turn timed out",
+            )
+            task_logger.close()
+            continue
+        except Exception as exc:
+            console.print(f"[red]Unexpected error: {exc}[/red]")
+            task_logger.log_task_end(
+                outcome="error",
+                total_duration_ms=(time.monotonic() - start) * 1000,
+                error=str(exc),
             )
             task_logger.close()
             continue

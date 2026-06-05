@@ -6,18 +6,22 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
 
 from harness.cli.context import AppContext
-from harness.core.loop import AgenticLoop, ChatDelegate, LoopConfig
+from harness.core.loop import AgenticLoop, ChatDelegate, LoopConfig, LoopEvent
 from harness.core.loop_delegate import LoopContext
 from harness.llm.types import ChatMessage
 from harness.logging.task_logger import TaskLogger
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+# Max chars for tool output display before truncation
+_MAX_TOOL_DISPLAY = 500
 
 
 def handle_run(
@@ -83,11 +87,32 @@ def handle_run(
         cwd=ctx.cwd,
     )
 
+    # Progress callback — real-time console output with truncation
+    def _on_event(ev: LoopEvent) -> None:
+        if ev.kind == "thinking":
+            console.print(f"[dim]Turn {ev.iteration} — thinking...[/dim]")
+        elif ev.kind == "retry":
+            console.print(
+                f"[yellow]Retry {ev.retry_attempt}/{_MAX_RETRIES}: "
+                f"{ev.retry_error[:100]}[/yellow]"
+            )
+        elif ev.kind == "tool_call":
+            params_str = _format_params(ev.tool_input or {})
+            console.print(f"[cyan]→ {ev.tool_name}({params_str})[/cyan]")
+        elif ev.kind == "tool_result":
+            output = ev.tool_output
+            if len(output) > _MAX_TOOL_DISPLAY:
+                output = output[:_MAX_TOOL_DISPLAY] + f"\n...<truncated {len(ev.tool_output) - _MAX_TOOL_DISPLAY} chars>"
+            style = "red" if ev.tool_error else ""
+            console.print(f"  {output}", style=style)
+        elif ev.kind == "done":
+            pass  # handled below
+
     # Run
     loop = AgenticLoop(delegate=delegate, ctx=loop_ctx, config=loop_config)
 
     async def _run():
-        outcome = await loop.run()
+        outcome = await loop.run(on_event=_on_event)
         if outcome.content:
             console.print(Markdown(outcome.content))
         elif outcome.kind == "error":
@@ -120,6 +145,19 @@ def _resolve_workspace(workspace: str, ctx: AppContext) -> str:
         return str(p.resolve())
     # Default: restrict to CWD (the harness project root)
     return str(Path(ctx.cwd).resolve())
+
+
+def _format_params(params: dict[str, Any]) -> str:
+    """Format tool params for compact display."""
+    if not params:
+        return ""
+    items = []
+    for k, v in params.items():
+        s = str(v)
+        if len(s) > 60:
+            s = s[:57] + "..."
+        items.append(f"{k}={s}")
+    return ", ".join(items)
 
 
 def add_run_subparser(subparsers, shared_parent) -> None:
