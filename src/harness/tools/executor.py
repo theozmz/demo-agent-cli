@@ -27,10 +27,12 @@ class ToolExecutor:
         registry: ToolRegistry,
         safety: "SafetyLayer | None" = None,
         policy: PermissionPolicy | None = None,
+        sandbox: "SandboxRuntime | None" = None,
     ):
         self.registry = registry
         self.safety = safety
         self.policy = policy or PermissionPolicy()
+        self.sandbox = sandbox
 
     async def execute(
         self,

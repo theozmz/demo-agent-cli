@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 
 class LlmConfig(BaseModel):
-    """LLM provider configuration — api_key / api_base live in harness.toml."""
+    """LLM provider configuration — secrets in harness.local.toml (git-ignored)."""
 
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-6-20250514"
@@ -68,21 +68,42 @@ class Config(BaseModel):
 
     @classmethod
     def load(cls, path: str | None = None) -> "Config":
-        """Load config from harness.toml, with optional env-var overrides."""
+        """Load config from harness.toml, with optional env-var overrides.
+
+        If harness.local.toml exists alongside harness.toml, it is deep-merged
+        on top — local sections/keys override the base file.  This lets you keep
+        secrets (api_key, api_base) out of version control.
+        """
         if path is None:
             path = cls._find_config()
         data: dict = {}
         if path and Path(path).exists():
             with open(path, "rb") as f:
                 data = tomllib.load(f)
+        # Deep-merge harness.local.toml when present alongside the base config
+        if path:
+            local_path = Path(path).with_name("harness.local.toml")
+            if local_path.exists():
+                with open(local_path, "rb") as f:
+                    local_data = tomllib.load(f)
+                cls._deep_merge(data, local_data)
         config = cls(**{k: v for k, v in data.items() if k in cls.model_fields})
         config._apply_env_overrides()
         return config
 
+    @staticmethod
+    def _deep_merge(base: dict, override: dict) -> None:
+        """Recursively merge *override* into *base* in-place."""
+        for key, value in override.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                Config._deep_merge(base[key], value)
+            else:
+                base[key] = value
+
     def _apply_env_overrides(self):
         """Minimal env-var overrides for model / provider only.
 
-        api_key and api_base are read exclusively from harness.toml.
+        api_key and api_base are read from harness.toml / harness.local.toml.
         """
         if os.environ.get("HARNESS_MODEL"):
             self.llm.model = os.environ["HARNESS_MODEL"]

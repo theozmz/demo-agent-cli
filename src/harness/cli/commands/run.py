@@ -100,6 +100,12 @@ def add_run_subparser(subparsers, shared_parent) -> None:
         default=30,
         help="Maximum tool-calling turns (default: 30)",
     )
+    parser.add_argument(
+        "-r", "--repomap",
+        action="store_true",
+        default=None,
+        help="Enable repository map in system prompt (overrides config)",
+    )
     parser.set_defaults(func=_run_dispatch)
     return parser
 

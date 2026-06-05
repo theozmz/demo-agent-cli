@@ -16,6 +16,7 @@ from harness.core.loop_delegate import (
     LoopDelegate, LoopContext, LoopOutcome, LoopSignal, TextAction,
 )
 from harness.core.context import ContextGatherer
+from harness.core.compaction import CompactionEngine, TruncationTracker
 from harness.core.errors import MaxTurnsReachedError
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,43 @@ class AgenticLoop:
         self.delegate = delegate
         self.ctx = ctx
         self.config = config
+        self._compaction_engine = CompactionEngine()
+        self._truncation_tracker = TruncationTracker()
+
+    # ------------------------------------------------------------------
+    # Compaction helpers
+    # ------------------------------------------------------------------
+
+    def _estimate_tokens(self) -> int:
+        """Estimate current token usage across all messages."""
+        if self.ctx.llm:
+            return self.ctx.llm.estimate_tokens(self.ctx.messages)
+        # Fallback: rough char-based estimate
+        total = sum(len(m.content or "") for m in self.ctx.messages)
+        return int(total * 0.35)
+
+    def _compaction_needed(self) -> bool:
+        ratio = self._estimate_tokens() / self.config.compaction_threshold
+        return ratio > self.config.compaction_threshold
+
+    def _auto_compact(self) -> None:
+        tokens = self._estimate_tokens()
+        result = self._compaction_engine.compact(self.ctx.messages, tokens)
+        if result.strategy.value != "none":
+            self.ctx.messages = result.messages
+            self._truncation_tracker.record()
+            logger.info(
+                "Compaction: %s — %d → ~%d tokens",
+                result.strategy.value,
+                result.tokens_before,
+                result.tokens_after,
+            )
+        else:
+            self._truncation_tracker.reset()
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
 
     async def run(self) -> LoopOutcome:
         """Execute the agent loop until completion or max turns."""
@@ -147,6 +185,10 @@ class AgenticLoop:
 
             # 5. Post-iteration
             await self.delegate.after_iteration(iteration, self.ctx)
+
+            # 6. Compaction check
+            if self._compaction_needed():
+                self._auto_compact()
 
         return LoopOutcome(
             kind="max_turns", content=final_text,

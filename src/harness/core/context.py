@@ -10,15 +10,18 @@ from harness.tools.registry import ToolRegistry
 
 class ContextGatherer:
     """
-    Assembles the complete system prompt from STATIC, DYNAMIC, and MEMORY parts.
-
-    For Phase 1, the STATIC part includes role definition + tool descriptions.
-    DYNAMIC includes date and workspace info.
+    Assembles the complete system prompt from STATIC, DYNAMIC, REPO_MAP,
+    and MEMORY parts.
     """
 
     def __init__(self, tool_registry: ToolRegistry, cwd: str = ""):
         self.tool_registry = tool_registry
         self.cwd = cwd
+        self._repo_map_text: str | None = None
+
+    def set_repo_map(self, text: str | None) -> None:
+        """Supply a pre-built repository map for the REPO_MAP block."""
+        self._repo_map_text = text
 
     def gather(self, messages: list[ChatMessage] | None = None) -> list[SystemPromptBlock]:
         """Assemble system prompt blocks for the current turn."""
@@ -27,6 +30,10 @@ class ContextGatherer:
         # STATIC: role + tools
         static_text = self._build_static_prompt()
         blocks.append(SystemPromptBlock(kind=SystemPromptPart.STATIC, text=static_text))
+
+        # REPO_MAP: repository structure (optional)
+        if self._repo_map_text:
+            blocks.append(SystemPromptBlock(kind=SystemPromptPart.REPO_MAP, text=self._repo_map_text))
 
         # DYNAMIC: date + workspace
         dynamic_text = self._build_dynamic_context()

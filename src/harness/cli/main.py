@@ -20,6 +20,8 @@ if sys.platform == "win32":
 from harness.cli.context import AppContext
 from harness.cli.commands.run import add_run_subparser
 from harness.cli.commands.doctor import add_doctor_subparser
+from harness.cli.commands.repl import add_repl_subparser
+from harness.cli.commands.tui import add_tui_subparser
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     shared = _shared_flags()
     add_run_subparser(subparsers, shared)
     add_doctor_subparser(subparsers, shared)
+    add_repl_subparser(subparsers, shared)
+    add_tui_subparser(subparsers, shared)
 
     return parser
 
@@ -88,10 +92,12 @@ def main() -> None:
     # Build the AppContext once; every subcommand receives it.
     provider_override = getattr(args, "provider", None)
     model_override = getattr(args, "model", None)
+    repomap_override = getattr(args, "repomap", None)
     ctx = AppContext.initialize(
         config_path=args.config,
         provider_override=provider_override,
         model_override=model_override,
+        repomap_override=repomap_override,
         debug=args.debug,
     )
 
