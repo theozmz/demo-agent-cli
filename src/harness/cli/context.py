@@ -48,6 +48,8 @@ class AppContext:
     safety: SafetyLayer
     context_gatherer: ContextGatherer
     cwd: str = field(default_factory=lambda: str(Path.cwd()))
+    # LangGraph infrastructure (populated when engine="langgraph")
+    langgraph_delegate: "LangGraphDelegate | None" = None
 
     @classmethod
     def initialize(
@@ -142,6 +144,20 @@ class AppContext:
             if mt is not None:
                 mt.wire_store(memory_store)
 
+        # 9. Initialize LangGraph infrastructure when engine="langgraph"
+        langgraph_delegate = None
+        if config.loop.engine == "langgraph":
+            langgraph_delegate = cls._init_langgraph(
+                config=config,
+                llm=llm,
+                tool_registry=registry,
+                tool_executor=executor,
+                context_gatherer=gatherer,
+            )
+            logger.info(
+                "LangGraph engine initialized — mode=%s", config.loop.mode
+            )
+
         logger.debug(
             "AppContext initialized — provider=%s model=%s base_url=%s",
             config.llm.provider,
@@ -157,6 +173,7 @@ class AppContext:
             safety=safety,
             context_gatherer=gatherer,
             cwd=cwd,
+            langgraph_delegate=langgraph_delegate,
         )
 
     @staticmethod
@@ -181,3 +198,68 @@ class AppContext:
         # Sub-agent tool (wired later)
         registry.register(AgentTool())
         return registry
+
+    @staticmethod
+    def _init_langgraph(
+        config: "Config",
+        llm: "LlmClient",
+        tool_registry: "ToolRegistry",
+        tool_executor: "ToolExecutor",
+        context_gatherer: "ContextGatherer",
+    ) -> "LangGraphDelegate | None":
+        """Build LangGraph graphs and return a LangGraphDelegate.
+
+        The graph topology depends on config.loop.mode:
+        - "standard": basic agent loop graph
+        - "pair_coding": coder + reviewer + human_approval loop
+        - "multi_agent": controller + implementers + two-stage review
+        """
+        from harness.langgraph.delegate import LangGraphDelegate
+        from harness.langgraph.graphs import (
+            build_pair_coding_graph,
+            build_multi_agent_graph,
+        )
+        from harness.langgraph.checkpointer import create_checkpointer
+
+        mode = config.loop.mode
+        checkpointer = create_checkpointer(backend="memory")
+
+        try:
+            if mode == "pair_coding":
+                graph = build_pair_coding_graph(
+                    llm=llm,
+                    checkpointer=checkpointer,
+                    interrupt_on_approval=config.loop.human_approval,
+                    max_review_iterations=config.loop.max_review_iterations,
+                )
+            elif mode == "multi_agent":
+                graph = build_multi_agent_graph(
+                    llm=llm,
+                    tool_registry=tool_registry,
+                    tool_executor=tool_executor,
+                    context_gatherer=context_gatherer,
+                    checkpointer=checkpointer,
+                )
+            else:
+                # "standard" — pair coding graph without human approval
+                # acts as a basic agent loop with built-in review
+                graph = build_pair_coding_graph(
+                    llm=llm,
+                    checkpointer=checkpointer,
+                    interrupt_on_approval=False,
+                    max_review_iterations=1,
+                )
+        except Exception as exc:
+            logger.error("Failed to build LangGraph graph: %s", exc)
+            return None
+
+        delegate = LangGraphDelegate(
+            graph=graph,
+            mode=mode,
+            llm=llm,
+            tool_executor=tool_executor,
+            gatherer=context_gatherer,
+        )
+
+        logger.info("LangGraph delegate created — mode=%s", mode)
+        return delegate

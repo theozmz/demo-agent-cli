@@ -16,6 +16,7 @@ class LlmConfig(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-6-20250514"
     fallback_model: str = "claude-haiku-3-5-20251001"
+    expensive_model: str = ""  # For reviews/architecture tasks (e.g., Opus)
     api_key: str = ""
     api_base: str = ""
     max_tokens: int = 8192
@@ -26,8 +27,15 @@ class LoopConfig(BaseModel):
     """Agentic loop configuration."""
 
     engine: Literal["native", "langgraph"] = "native"
+    mode: Literal["standard", "pair_coding", "multi_agent"] = "standard"
     max_turns: int = Field(default=30, ge=1, le=500)
     compaction_threshold: float = Field(default=0.80, ge=0.5, le=0.95)
+    human_approval: bool = True
+    max_review_iterations: int = Field(default=5, ge=1, le=20)
+    # Autonomous mode selection (ComplexityGate)
+    auto_mode: bool = True
+    auto_mode_threshold: float = Field(default=0.6, ge=0.4, le=0.95)
+    auto_mode_llm_fallback: bool = False
 
 
 class SandboxConfig(BaseModel):

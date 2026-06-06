@@ -114,6 +114,31 @@ Rich Markdown 输出 + JSONL 会话日志
 ### RepoMap（tree-sitter + PageRank）
 可选的仓库结构映射，注入系统提示词。使用 `tree-sitter-language-pack` 解析代码为标签（类、函数、方法），通过导入图的 PageRank 排序文件，在 token 预算内选取最重要的文件。
 
+### LangGraph 多智能体协作
+Harness 包含完整的基于 LangGraph 的多智能体系统，支持两种协作模式：
+
+**结对编程模式**（`mode = "pair_coding"`）：
+- Coder 智能体：根据任务和审查反馈生成/修改代码
+- Reviewer 智能体：结构化 JSON 审查（决策 + 严重性 + 评论）
+- 人机交互中断：LangGraph `interrupt_before` 暂停等待 CLI 用户审批
+- 条件循环：APPROVED → done, CHANGES_REQUESTED → 返回 coder
+
+**多智能体协作模式**（`mode = "multi_agent"`）：
+- Controller：分解计划为依赖排序的任务列表，标记复杂度，绝不写代码
+- Implementer 子智能体：执行单个任务，具有写权限和精选上下文（上下文隔离）
+- Spec Reviewer：对照计划验证功能正确性（始终使用最强模型）
+- Code Quality Reviewer：评估代码结构和质量（仅在规范通过后执行）
+- Remediation 循环：审查失败创建修复任务，重新路由到实现者
+
+**配置方式**：
+```toml
+[loop]
+engine = "langgraph"
+mode = "pair_coding"        # "standard" | "pair_coding" | "multi_agent"
+human_approval = true
+max_review_iterations = 5
+```
+
 ### 上下文压缩
 两级策略防止 token 溢出：
 - **MICRO**（>80% tokens）：将旧只读工具结果替换为 `[stub: ... N chars]`
@@ -153,6 +178,9 @@ Rich Markdown 输出 + JSONL 会话日志
 - **压缩 + 重试**：优雅处理长对话和临时 LLM 故障。
 - **可扩展工具**：清晰的 ABC 工具系统，继承 `Tool` 即可添加新工具。
 - **配置分层**：`harness.toml`（共享）+ `harness.local.toml`（密钥，git-ignored）。
+- **LangGraph 多智能体**：结对编程（coder + reviewer + 人工审批）和多智能体协作（controller + implementers + 两阶段审查）。自主复杂度评估与分层模型路由。
+- **子智能体拓扑**：顺序链、并行扇出、树形嵌套和DAG依赖调度 — 灵活的编排模式。
+- **两阶段审查流水线**：规范合规（功能正确性）→ 代码质量（结构/风格）— 审查始终使用最强模型。
 
 ---
 
@@ -163,7 +191,9 @@ python/
 ├── src/harness/
 │   ├── cli/           # CLI 入口、REPL、TUI、命令
 │   ├── config/        # Pydantic 配置模型
-│   ├── core/          # Agent 循环、压缩、上下文、会话
+│   ├── core/          # Agent 循环、压缩、上下文、会话、子智能体
+│   ├── langgraph/     # LangGraph 多智能体图、节点、委托
+│   │   └── nodes/     # 结对编程 + 多智能体协作节点
 │   ├── llm/           # LLM 客户端 ABC + LiteLLM 提供商
 │   ├── tools/         # 工具 ABC、执行器、权限、12 个内置工具
 │   │   └── sandbox/   # Docker + NoOp 运行时

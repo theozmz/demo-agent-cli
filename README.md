@@ -62,6 +62,8 @@ Edit the generated `harness.local.toml` with your API key, then run `.venv\Scrip
 
 ### Agent Loop (Query → LLM → Tools → Observe → Repeat)
 
+Harness supports **two agent loop engines** — the native async loop and LangGraph StateGraph.
+
 ```
 User prompt
   │
@@ -69,7 +71,7 @@ User prompt
 ContextGatherer ──► System prompt (tools + repomap + memory)
   │
   ▼
-┌─ AgenticLoop ───────────────────────────────────┐
+┌─ AgenticLoop (native) ───────────────────────────┐
 │                                                 │
 │  1. call_llm() ──► LLM response                 │
 │  2. if tool_calls: execute tools, append results │
@@ -79,6 +81,19 @@ ContextGatherer ──► System prompt (tools + repomap + memory)
 │                                                 │
 │  Real-time events: thinking → tool_call →       │
 │  tool_result → retry → done                      │
+└─────────────────────────────────────────────────┘
+  │
+  ▼
+OR (engine = "langgraph"):
+  │
+  ▼
+┌─ LangGraph StateGraph ──────────────────────────┐
+│                                                 │
+│  Pair Coding: coder → reviewer → human_approval │
+│  Multi-Agent: controller → implementers → review│
+│                                                 │
+│  Built-in: checkpointing, retry, streaming      │
+│  Human-in-the-loop: interrupt for CLI approval  │
 └─────────────────────────────────────────────────┘
   │
   ▼
@@ -113,6 +128,53 @@ Persistent key-value store at `~/.harness/memory.db`. WAL mode for multi-process
 
 ### RepoMap (tree-sitter + PageRank)
 Optional repository structure map injected into system prompt. Uses `tree-sitter-language-pack` to parse code into tags (classes, functions, methods), ranks files by PageRank on import graph, fits top files under token budget.
+
+### LangGraph Multi-Agent Collaboration
+Harness includes a full LangGraph-based multi-agent system with two collaboration modes:
+
+**Pair Coding Mode** (`mode = "pair_coding"`):
+- **Coder agent**: generates/revises code from task + review feedback
+- **Reviewer agent**: structured JSON review (decision + severity + comments)
+- **Human-in-the-Loop**: LangGraph `interrupt_before` pauses for CLI user approval
+- **Conditional loop**: `APPROVED → done`, `CHANGES_REQUESTED → back to coder`
+- Shared TypedDict state with review iteration capping
+
+**Multi-Agent Collaboration Mode** (`mode = "multi_agent"`):
+- **Controller agent**: decomposes plan into dependency-ordered task list with complexity tags; never writes code
+- **Implementer agents**: execute individual tasks with write access and curated context (context isolation)
+- **Spec Compliance Reviewer**: validates implementation against plan (always expensive model)
+- **Code Quality Reviewer**: evaluates structure and quality (only after spec passes)
+- **Remediation loop**: failed reviews create fix tasks, routed back to implementers
+- **DAG scheduler**: topological sort via `TaskItem.dependencies` — sequential by default (avoids Git conflicts), parallel fan-out for independent research tasks
+
+**Autonomous Complexity Assessment**:
+- Two-pass heuristic: keyword scoring (simple/integration/architecture) with confidence estimation
+- Model routing by complexity tier: simple→cheap (Haiku), integration→default (Sonnet), architecture/review→expensive (Opus)
+- Controller tags each task; implementer model selected accordingly
+
+**Sub-Agent Organization Patterns**:
+
+| Pattern | Mechanism | Use Case |
+|---------|-----------|----------|
+| Sequential chain (default) | task_router → implementer → result_collector loop, one task at a time | Code changes (avoids Git conflicts) |
+| Parallel fan-out | `asyncio.gather()` for independent tasks | Research, read-only exploration |
+| Tree (nested) | Implementer's agent tool spawns child sub-agents (depth ≤ 2) | Complex subtasks needing research |
+| DAG | `TaskItem.dependencies` resolved by topological sort | Interdependent tasks |
+
+Configure via `harness.toml`:
+```toml
+[loop]
+engine = "langgraph"        # "native" | "langgraph"
+mode = "pair_coding"        # "standard" | "pair_coding" | "multi_agent"
+human_approval = true
+max_review_iterations = 5
+```
+
+Or via CLI:
+```bash
+harness run --mode pair_coding "write a fibonacci function"
+harness run --mode multi_agent "plan and implement a TODO CLI app"
+```
 
 ### Context Compaction
 Two-tier strategy to prevent token overflow:
@@ -153,6 +215,9 @@ Global flags: `-c/--config PATH`, `-d/--debug`. Run flags: `-p/--provider`, `-m/
 - **Compaction + Retry**: Handles long conversations and transient LLM failures gracefully.
 - **Extensible tools**: Clean ABC-based tool system. Add new tools by subclassing `Tool`.
 - **Config layering**: `harness.toml` (shared) + `harness.local.toml` (secrets, git-ignored).
+- **LangGraph multi-agent**: Pair coding (coder + reviewer + human-in-the-loop) and multi-agent collaboration (controller + implementers + two-stage review). Autonomous complexity assessment with tiered model routing.
+- **Sub-agent topologies**: Sequential chain, parallel fan-out, tree nesting, and DAG-based dependency scheduling — flexible orchestration patterns.
+- **Two-stage review pipeline**: Spec compliance (functional correctness) then code quality (structure/style) — always uses strongest model for review.
 
 ---
 
@@ -163,7 +228,9 @@ python/
 ├── src/harness/
 │   ├── cli/           # CLI entry, REPL, TUI, commands
 │   ├── config/        # Pydantic config models
-│   ├── core/          # Agent loop, compaction, context, session
+│   ├── core/          # Agent loop, compaction, context, session, subagent
+│   ├── langgraph/     # LangGraph multi-agent graphs, nodes, delegate
+│   │   └── nodes/     # Pair coding + multi-agent collaboration nodes
 │   ├── llm/           # LLM client ABC + LiteLLM provider
 │   ├── tools/         # Tool ABC, executor, permissions, 12 built-ins
 │   │   └── sandbox/   # Docker + NoOp runtimes
