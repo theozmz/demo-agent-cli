@@ -2,17 +2,19 @@
 
 Each **session** gets its own file: ``logs/<session_id>.jsonl``.
 All interactions within a session append to that file.
+
+Implements the credit-assignment event schema from Li et al. (2026):
+context variable dimensions (P/S/M) × feedback granularity (G0–G3).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +223,93 @@ class TaskLogger:
             source=source,
             message=_truncate(message, 1000),
             tool_name=tool_name,
+        )
+
+    def log_attribution(
+        self,
+        *,
+        dimension: Literal["P", "S", "M"] = "S",
+        granularity: Literal["G0", "G1", "G2", "G3"] = "G0",
+        event_kind: str = "",
+        tool_name: str = "",
+        iteration: int = 0,
+        outcome: str = "",
+        detail: str = "",
+    ) -> None:
+        """Log a credit-assignment signal per Li et al. (2026) taxonomy.
+
+        Args:
+            dimension: Context variable — P (prompt), S (structural), M (memory).
+            granularity: Feedback signal granularity — G0 (outcome scalar),
+                G1 (process text), G2 (component-attributed), G3 (harness-level).
+            event_kind: The ``LoopEvent.kind`` that produced this signal.
+            tool_name: Tool involved (for G2 component-attributed signals).
+            iteration: Turn number in the agent loop.
+            outcome: Task-level outcome for G0 signals.
+            detail: Human-readable attribution note.
+        """
+        self._emit(
+            "attribution",
+            dimension=dimension,
+            granularity=granularity,
+            event_kind=event_kind,
+            tool_name=tool_name,
+            iteration=iteration,
+            outcome=outcome,
+            detail=detail,
+        )
+
+    def log_compaction(
+        self,
+        *,
+        strategy: str = "",
+        tokens_before: int = 0,
+        tokens_after: int = 0,
+        truncated_count: int = 0,
+        iteration: int = 0,
+    ) -> None:
+        """Log a compaction event — G3 cross-dimensional harness signal.
+
+        Compaction reflects tension across all three context dimensions:
+        P (what text survives), S (which tool results are stubbed),
+        M (how and when state is reduced).
+        """
+        self._emit(
+            "compaction",
+            strategy=strategy,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            truncated_count=truncated_count,
+            iteration=iteration,
+            dimension="M",
+            granularity="G3",
+        )
+
+    def log_event_summary(
+        self,
+        *,
+        p_count: int = 0,
+        s_count: int = 0,
+        m_count: int = 0,
+        g0_count: int = 0,
+        g1_count: int = 0,
+        g2_count: int = 0,
+        g3_count: int = 0,
+    ) -> None:
+        """Log a summary of P/S/M and G0–G3 event counts for the session.
+
+        Called at session end to enable quick credit-assignment analysis
+        without re-parsing the entire JSONL file.
+        """
+        self._emit(
+            "event_summary",
+            p_count=p_count,
+            s_count=s_count,
+            m_count=m_count,
+            g0_count=g0_count,
+            g1_count=g1_count,
+            g2_count=g2_count,
+            g3_count=g3_count,
         )
 
     def close(self) -> None:

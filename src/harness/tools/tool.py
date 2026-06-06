@@ -43,6 +43,7 @@ class ToolContext:
     turn_id: str = ""
     workspace_root: str = ""
     task_logger: "TaskLogger | None" = None
+    subagent_depth: int = 0
 
 
 class Tool(ABC):

@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 # ---- sub-agent constraint defaults ----
 
 DEFAULT_MAX_DEPTH = 2
-DEFAULT_MAX_TURNS = 15
-DEFAULT_TIMEOUT_SECONDS = 120
-DEFAULT_MAX_PER_SESSION = 20
+DEFAULT_MAX_TURNS = 50
+DEFAULT_TIMEOUT_SECONDS = 3600
+DEFAULT_MAX_PER_SESSION = 50
 
 READ_ONLY_TOOLS = frozenset({
     "file_read",
@@ -224,7 +224,7 @@ class AgentTool(Tool):
             messages=[],
             system_prompt="",
             cwd=context.cwd,
-            subagent_depth=0,  # will be incremented by SubAgentManager.spawn
+            subagent_depth=context.subagent_depth,
         )
 
         cfg = SubAgentConfig(max_turns=max_turns)

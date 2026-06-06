@@ -3,7 +3,7 @@
 [loop]
 engine = "native"
 mode = "standard"
-max_turns = 30
+max_turns = 500
 compaction_threshold = 0.80
 human_approval = true
 max_review_iterations = 5

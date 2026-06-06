@@ -61,6 +61,7 @@ class ComplexityAssessor:
         r"\b(refactor|migrate|integrate|cross.module|multi.module)\b",
         r"\b(database|schema|query|orm|model\s+relation)\b",
         r"\b(rest|graphql|websocket|microservice)\b",
+        r"\b(translate|port|convert)\b",  # cross-language / cross-platform work
     ]
     ARCHITECTURE_PATTERNS: list[str] = [
         r"\b(design|architecture|security|critical|auth\w+)\b",
@@ -68,6 +69,8 @@ class ComplexityAssessor:
         r"\b(concurrency|locking|transaction|race\s+condition)\b",
         r"\b(access\s+control|permission|real.time|notification\s+system)\b",
         r"\b(oauth|sso|encrypt|decrypt|token|jwt|rbac)\b",
+        r"\b(role.based|authorization|authentication)\b",
+        r"\b(monolith|microservice.architecture|system.design)\b",
     ]
 
     # Thresholds

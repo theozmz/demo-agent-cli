@@ -239,6 +239,7 @@ class AppContext:
                     tool_executor=tool_executor,
                     context_gatherer=context_gatherer,
                     checkpointer=checkpointer,
+                    fan_out_implementers=True,
                 )
             else:
                 # "standard" — pair coding graph without human approval

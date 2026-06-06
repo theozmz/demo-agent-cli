@@ -211,3 +211,72 @@ class TestRouteFunctions:
             "code_quality_review": {"passed": True, "issues": [], "file": "", "line": 0},
         }
         assert _route_after_quality_review(state) == "remediation"
+
+    def test_route_after_quality_both_fail(self):
+        """Both spec and code quality reviews fail → remediation."""
+        from harness.langgraph.graphs import _route_after_quality_review
+
+        state = {
+            "spec_review": {"passed": False, "issues": ["spec issue"], "file": "a.py", "line": 1},
+            "code_quality_review": {"passed": False, "issues": ["quality issue"], "file": "a.py", "line": 10},
+        }
+        assert _route_after_quality_review(state) == "remediation"
+
+    def test_route_after_quality_code_quality_fail(self):
+        """Only code quality fails → remediation."""
+        from harness.langgraph.graphs import _route_after_quality_review
+
+        state = {
+            "spec_review": {"passed": True, "issues": [], "file": "", "line": 0},
+            "code_quality_review": {"passed": False, "issues": ["needs refactoring"], "file": "x.py", "line": 5},
+        }
+        assert _route_after_quality_review(state) == "remediation"
+
+    def test_route_next_task_code_quality_stage(self):
+        """review_stage='code_quality' with no pending tasks → code_quality_reviewer."""
+        from harness.langgraph.graphs import _route_next_task
+
+        state = {
+            "review_stage": "code_quality",
+            "task_list": [
+                {"id": "t1", "status": "DONE", "dependencies": []},
+            ],
+        }
+        assert _route_next_task(state) == "code_quality_reviewer"
+
+    def test_route_next_task_blocked_terminal(self):
+        """terminal_reason='blocked' → finalize (error terminal)."""
+        from harness.langgraph.graphs import _route_next_task
+
+        state = {
+            "terminal_reason": "blocked",
+            "review_stage": "spec",
+            "task_list": [
+                {"id": "t1", "status": "BLOCKED", "dependencies": []},
+            ],
+        }
+        assert _route_next_task(state) == "finalize"
+
+    def test_route_next_task_in_progress(self):
+        """Tasks IN_PROGRESS → route to implementer to continue work."""
+        from harness.langgraph.graphs import _route_next_task
+
+        state = {
+            "review_stage": "spec",
+            "task_list": [
+                {"id": "t1", "status": "IN_PROGRESS", "dependencies": []},
+            ],
+        }
+        assert _route_next_task(state) == "implementer"
+
+    def test_route_next_task_done_with_concerns_no_pending(self):
+        """All tasks DONE_WITH_CONCERNS, review_stage=done → finalize."""
+        from harness.langgraph.graphs import _route_next_task
+
+        state = {
+            "review_stage": "done",
+            "task_list": [
+                {"id": "t1", "status": "DONE_WITH_CONCERNS", "dependencies": []},
+            ],
+        }
+        assert _route_next_task(state) == "finalize"

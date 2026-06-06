@@ -1,4 +1,10 @@
-"""AgenticLoop — the core agent loop (query → LLM → tools → observe → repeat)."""
+"""AgenticLoop — the core agent loop (query → LLM → tools → observe → repeat).
+
+Implements the credit-assignment framework from "Who Gets the Credit?"
+— each LoopEvent carries a SignalGranularity tag (G0–G3) so downstream
+analysis can attribute outcomes to prompt (P), structural (S), and
+memory (M) context dimensions.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +12,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 from harness.llm.types import ChatMessage, ToolCall
@@ -25,6 +32,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Credit-assignment framework enums (from Li et al., 2026)
+# ---------------------------------------------------------------------------
+
+class SignalGranularity(Enum):
+    """Feedback signal granularity — the credit-assignment taxonomy axis.
+
+    G0 — Outcome-only scalar (pass/fail, exit code).
+    G1 — Process-level textual diagnostic (error messages, tool outputs).
+    G2 — Component-attributed signal (which tool/validator failed).
+    G3 — Cross-dimensional harness signal (compaction, retry, safety, memory hit).
+    """
+    G0 = "G0"
+    G1 = "G1"
+    G2 = "G2"
+    G3 = "G3"
+
+
+class AttributionDimension(Enum):
+    """Which context dimension a signal primarily informs.
+
+    P — Prompt context (semantic control: instructions, exemplars).
+    S — Structural context (orchestration: roles, workflows, tools).
+    M — Memory context (runtime state: persistence, retrieval, compaction).
+    """
+    PROMPT = "P"
+    STRUCTURAL = "S"
+    MEMORY = "M"
+
 # Retry config for transient LLM failures
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = [1.0, 3.0, 7.0]  # seconds, exponential-ish
@@ -43,9 +80,14 @@ _TRANSIENT_PATTERNS = (
 # ---------------------------------------------------------------------------
 @dataclass
 class LoopEvent:
-    """Emitted by AgenticLoop.run() for real-time CLI feedback."""
+    """Emitted by AgenticLoop.run() for real-time CLI feedback.
 
-    kind: str  # thinking | tool_call | tool_result | text | retry | done
+    Each event carries a ``signal_granularity`` tag (G0–G3) and a
+    primary ``attribution`` dimension (P/S/M) for credit-assignment
+    analysis per Li et al. (2026).
+    """
+
+    kind: str  # thinking | tool_call | tool_result | text | retry | done | compact
     iteration: int = 0
 
     # tool_call / tool_result
@@ -64,6 +106,10 @@ class LoopEvent:
     # final outcome (kind="done")
     outcome: LoopOutcome | None = None
 
+    # Credit-assignment framework (Li et al., 2026)
+    signal_granularity: SignalGranularity = SignalGranularity.G0
+    attribution: AttributionDimension = AttributionDimension.STRUCTURAL
+
 
 # ---------------------------------------------------------------------------
 # LoopConfig
@@ -72,7 +118,7 @@ class LoopEvent:
 class LoopConfig:
     """Configuration for the agent loop."""
 
-    max_turns: int = 30
+    max_turns: int = 500
     compaction_threshold: float = 0.80
     enable_tool_intent_nudge: bool = False
 
@@ -164,7 +210,15 @@ class ChatDelegate(LoopDelegate):
                         iteration=iteration,
                         retry_attempt=attempt + 1,
                         retry_error=str(exc)[:200],
+                        signal_granularity=SignalGranularity.G3,
+                        attribution=AttributionDimension.MEMORY,
                     ))
+                if self._task_logger:
+                    self._task_logger.log_attribution(
+                        dimension="M", granularity="G3",
+                        event_kind="retry", iteration=iteration,
+                        detail=f"LLM retry {attempt+1}/{_MAX_RETRIES}: {str(exc)[:100]}",
+                    )
                 await asyncio.sleep(backoff)
 
         # Should not reach here, but just in case
@@ -187,14 +241,17 @@ class ChatDelegate(LoopDelegate):
             turn_id="",
             workspace_root=self._workspace_root,
             task_logger=self._task_logger,
+            subagent_depth=ctx.subagent_depth,
         )
         for tc in tool_calls:
-            # Notify: tool call starting
+            # Notify: tool call starting — G2: component-attributed
             if self._on_event:
                 self._on_event(LoopEvent(
                     kind="tool_call",
                     tool_name=tc.name,
                     tool_input=tc.input,
+                    signal_granularity=SignalGranularity.G2,
+                    attribution=AttributionDimension.STRUCTURAL,
                 ))
 
             try:
@@ -213,7 +270,16 @@ class ChatDelegate(LoopDelegate):
                         tool_name=tc.name,
                         tool_output=f"Error: {e}",
                         tool_error=True,
+                        signal_granularity=SignalGranularity.G2,
+                        attribution=AttributionDimension.STRUCTURAL,
                     ))
+                if self._task_logger:
+                    self._task_logger.log_attribution(
+                        dimension="S", granularity="G2",
+                        event_kind="tool_result", tool_name=tc.name,
+                        iteration=ctx.iteration,
+                        detail=f"Tool error: {str(e)[:100]}",
+                    )
                 continue
 
             # Notify: tool result (truncated for display)
@@ -225,12 +291,24 @@ class ChatDelegate(LoopDelegate):
                 is_error=output.is_error,
             ))
             if self._on_event:
+                # G1 for read tools (process-level text), G2 for write/exec
+                gran = SignalGranularity.G2 if tc.name in ("file_write", "file_edit", "bash_exec") else SignalGranularity.G1
                 self._on_event(LoopEvent(
                     kind="tool_result",
                     tool_name=tc.name,
                     tool_output=display_output,
                     tool_error=output.is_error,
+                    signal_granularity=gran,
+                    attribution=AttributionDimension.STRUCTURAL,
                 ))
+            if self._task_logger:
+                gran_str = "G2" if tc.name in ("file_write", "file_edit", "bash_exec") else "G1"
+                self._task_logger.log_attribution(
+                    dimension="S", granularity=gran_str,
+                    event_kind="tool_result", tool_name=tc.name,
+                    iteration=ctx.iteration,
+                    detail="Tool executed successfully",
+                )
 
         return None
 
@@ -278,7 +356,7 @@ class AgenticLoop:
         strategy = self._compaction_engine.evaluate(self.ctx.messages, tokens)
         return strategy != CompactionStrategy.NONE
 
-    def _auto_compact(self) -> None:
+    def _auto_compact(self, on_event: Callable[[LoopEvent], None] | None = None) -> None:
         tokens = self._estimate_tokens()
         result = self._compaction_engine.compact(self.ctx.messages, tokens)
         if result.strategy.value != "none":
@@ -290,6 +368,24 @@ class AgenticLoop:
                 result.tokens_before,
                 result.tokens_after,
             )
+            # G3: cross-dimensional harness signal — compaction reflects
+            # token budget pressure, which involves P (what to keep),
+            # S (which tool results to stub), and M (how much state)
+            if on_event:
+                on_event(LoopEvent(
+                    kind="compact",
+                    content=result.strategy.value,
+                    signal_granularity=SignalGranularity.G3,
+                    attribution=AttributionDimension.MEMORY,
+                ))
+            # Log to TaskLogger for persistent credit-assignment analysis
+            if self.delegate and hasattr(self.delegate, '_task_logger') and self.delegate._task_logger:
+                self.delegate._task_logger.log_compaction(
+                    strategy=result.strategy.value,
+                    tokens_before=result.tokens_before,
+                    tokens_after=result.tokens_after,
+                    truncated_count=result.truncated_count,
+                )
         else:
             self._truncation_tracker.reset()
 
@@ -322,19 +418,31 @@ class AgenticLoop:
                     duration_ms=(time.monotonic() - start_time) * 1000, turns=iteration,
                 )
                 if on_event:
-                    on_event(LoopEvent(kind="done", outcome=outcome))
+                    on_event(LoopEvent(
+                        kind="done", outcome=outcome,
+                        signal_granularity=SignalGranularity.G0,
+                        attribution=AttributionDimension.STRUCTURAL,
+                    ))
                 return outcome
 
             # 2. Pre-LLM hook
             early = await self.delegate.before_llm_call(self.ctx, iteration)
             if early:
                 if on_event:
-                    on_event(LoopEvent(kind="done", outcome=early))
+                    on_event(LoopEvent(
+                        kind="done", outcome=early,
+                        signal_granularity=SignalGranularity.G0,
+                        attribution=AttributionDimension.STRUCTURAL,
+                    ))
                 return early
 
-            # 3. Call LLM
+            # 3. Call LLM — G1: process-level textual signal
             if on_event:
-                on_event(LoopEvent(kind="thinking", iteration=iteration))
+                on_event(LoopEvent(
+                    kind="thinking", iteration=iteration,
+                    signal_granularity=SignalGranularity.G1,
+                    attribution=AttributionDimension.PROMPT,
+                ))
             try:
                 response = await self.delegate.call_llm(self.ctx, iteration)
             except Exception as e:
@@ -344,7 +452,11 @@ class AgenticLoop:
                     duration_ms=(time.monotonic() - start_time) * 1000, turns=iteration,
                 )
                 if on_event:
-                    on_event(LoopEvent(kind="done", outcome=outcome))
+                    on_event(LoopEvent(
+                        kind="done", outcome=outcome,
+                        signal_granularity=SignalGranularity.G0,
+                        attribution=AttributionDimension.STRUCTURAL,
+                    ))
                 return outcome
 
             # 4. Parse response
@@ -355,32 +467,46 @@ class AgenticLoop:
                 outcome = await self.delegate.execute_tool_calls(response.tool_calls, self.ctx)
                 if outcome:
                     if on_event:
-                        on_event(LoopEvent(kind="done", outcome=outcome))
+                        on_event(LoopEvent(
+                            kind="done", outcome=outcome,
+                            signal_granularity=SignalGranularity.G0,
+                            attribution=AttributionDimension.STRUCTURAL,
+                        ))
                     return outcome
             else:
                 final_text = response.text or ""
                 action = await self.delegate.handle_text_response(final_text, self.ctx)
                 if action == TextAction.RETURN:
+                    usage = response.usage
+                    tokens_used = (usage.input_tokens + usage.output_tokens) if usage else 0
                     outcome = LoopOutcome(
                         kind="completed", content=final_text,
-                        tokens_used=(response.usage.input_tokens + response.usage.output_tokens),
+                        tokens_used=tokens_used,
                         duration_ms=(time.monotonic() - start_time) * 1000, turns=iteration,
                     )
                     if on_event:
-                        on_event(LoopEvent(kind="done", outcome=outcome))
+                        on_event(LoopEvent(
+                            kind="done", outcome=outcome,
+                            signal_granularity=SignalGranularity.G0,
+                            attribution=AttributionDimension.PROMPT,
+                        ))
                     return outcome
 
             # 5. Post-iteration
             await self.delegate.after_iteration(iteration, self.ctx)
 
-            # 6. Compaction check
+            # 6. Compaction check — emits G3 cross-dimensional harness signal
             if self._compaction_needed():
-                self._auto_compact()
+                self._auto_compact(on_event)
 
         outcome = LoopOutcome(
             kind="max_turns", content=final_text,
             duration_ms=(time.monotonic() - start_time) * 1000, turns=iteration,
         )
         if on_event:
-            on_event(LoopEvent(kind="done", outcome=outcome))
+            on_event(LoopEvent(
+                kind="done", outcome=outcome,
+                signal_granularity=SignalGranularity.G0,
+                attribution=AttributionDimension.STRUCTURAL,
+            ))
         return outcome

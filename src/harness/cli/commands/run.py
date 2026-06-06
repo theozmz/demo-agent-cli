@@ -248,12 +248,13 @@ def _build_langgraph_on_demand(
                 tool_executor=ctx.tool_executor,
                 context_gatherer=ctx.context_gatherer,
                 checkpointer=checkpointer,
+                fan_out_implementers=True,
             )
         else:  # pair_coding or standard
             graph = build_pair_coding_graph(
                 llm=ctx.llm,
                 checkpointer=checkpointer,
-                interrupt_on_approval=human_approval and mode == "pair_coding",
+                interrupt_on_approval=False,  # Autonomous mode: no human interrupt
                 max_review_iterations=max_review_iterations,
             )
 
@@ -428,8 +429,8 @@ def add_run_subparser(subparsers, shared_parent) -> None:
     parser.add_argument(
         "-n", "--max-turns",
         type=int,
-        default=30,
-        help="Maximum tool-calling turns (default: 30)",
+        default=500,
+        help="Maximum tool-calling turns (default: 500)",
     )
     parser.add_argument(
         "-r", "--repomap",
@@ -486,6 +487,7 @@ def _run_dispatch(args, ctx: AppContext) -> None:
                 tool_executor=ctx.tool_executor,
                 context_gatherer=ctx.context_gatherer,
                 checkpointer=checkpointer,
+                fan_out_implementers=True,
             )
         else:
             graph = build_pair_coding_graph(

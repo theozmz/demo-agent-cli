@@ -87,7 +87,7 @@ class HarnessTui(App):
         loop = AgenticLoop(delegate=self._delegate, ctx=loop_ctx, config=self._loop_cfg)
 
         try:
-            outcome = await asyncio.wait_for(loop.run(), timeout=300)
+            outcome = await asyncio.wait_for(loop.run(), timeout=3600)
             if outcome.content:
                 log.write(f"[bold green]Agent:[/] {outcome.content}")
                 self._messages.append(ChatMessage.assistant(outcome.content))

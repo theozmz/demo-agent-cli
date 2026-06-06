@@ -72,7 +72,10 @@ class LangGraphDelegate(LoopDelegate):
         self._session_id = session_id or str(uuid.uuid4())
         self._task_logger = task_logger
         self._signal: LoopSignal = LoopSignal.NONE
-        self._config: dict = {"configurable": {"thread_id": self._thread_id}}
+        self._config: dict = {
+            "configurable": {"thread_id": self._thread_id},
+            "recursion_limit": 100,
+        }
         self._final_state: dict = {}
         self._graph_started = False
         self._on_event: Callable[[LoopEvent], None] | None = None
@@ -110,43 +113,56 @@ class LangGraphDelegate(LoopDelegate):
 
         For full-graph modes, this runs the entire graph to completion.
         For standard mode, this runs one graph step per iteration.
+
+        Interrupt detection: LangGraph's interrupt_before pauses the graph
+        without raising an exception. We detect pauses by checking
+        ``graph.get_state(config).next`` after astream_events completes.
+        If ``.next`` is non-empty, the graph is waiting at an interrupt point.
         """
         from harness.llm.types import LlmResponse
 
-        # Build initial state from LoopContext
         initial_state = self._build_initial_state(ctx, iteration)
 
         try:
-            # Run graph with astream for event emission
             async for event in self._graph.astream_events(
                 initial_state,
                 config=self._config,
                 version="v2",
             ):
                 self._handle_graph_event(event)
-
-            # Get final state
-            final_state = self._graph.get_state(self._config)
-            if final_state and final_state.values:
-                self._final_state = final_state.values
-
         except Exception as exc:
-            logger.error("LangGraph graph execution failed: %s", exc)
-            # Check for GraphInterrupt (human-in-the-loop)
+            # astream_events may raise GraphInterrupt internally in some
+            # langgraph versions — handle it as a pause, not a crash.
             if "GraphInterrupt" in type(exc).__name__:
-                logger.info("Graph interrupted for human approval")
-                # Return a placeholder — the CLI will handle resume
+                logger.info("Graph interrupted for human approval (via exception)")
                 return LlmResponse(
                     text="⏸ Graph paused for human approval. Use `harness continue` to proceed.",
                     tool_calls=None,
                     usage=None,
                 )
-
+            logger.error("LangGraph graph execution failed: %s", exc)
             raise
 
-        # Extract final text from state
-        final_text = self._extract_final_text()
+        # Check for interrupt via checkpointer state
+        try:
+            state = self._graph.get_state(self._config)
+            if state and state.next:
+                # Graph is paused at an interrupt point
+                logger.info("Graph paused at: %s", state.next)
+                if state.values:
+                    self._final_state = state.values
+                return LlmResponse(
+                    text="⏸ Graph paused for human approval. Use `harness continue` to proceed.",
+                    tool_calls=None,
+                    usage=None,
+                )
+            if state and state.values:
+                self._final_state = state.values
+        except ValueError:
+            logger.debug("No checkpointer configured — cannot detect interrupts")
 
+        # Graph completed — extract final text
+        final_text = self._extract_final_text()
         return LlmResponse(
             text=final_text,
             tool_calls=None,
@@ -174,30 +190,44 @@ class LangGraphDelegate(LoopDelegate):
     async def resume_with_approval(self, decision: str) -> dict:
         """Resume a paused graph after human approval.
 
+        Updates state with the user's decision at the interrupt point,
+        then continues graph execution from the checkpoint.
+
         Args:
             decision: "APPROVED" or "CHANGES_REQUESTED"
 
         Returns:
-            The final graph state after completion.
+            The final graph state after completion, or current state
+            if the graph pauses again.
         """
-        # Update state with the user's decision
+        # Inject the user's decision at the interrupt point
         self._graph.update_state(
             self._config,
             {"final_decision": decision},
         )
 
-        # Continue execution
-        final_state = {}
-        async for event in self._graph.astream_events(
-            None,  # None = continue from checkpoint
-            config=self._config,
-            version="v2",
-        ):
-            self._handle_graph_event(event)
+        # Continue execution from checkpoint
+        final_state: dict = {}
+        try:
+            async for event in self._graph.astream_events(
+                None,  # None = continue from checkpoint
+                config=self._config,
+                version="v2",
+            ):
+                self._handle_graph_event(event)
+        except Exception as exc:
+            if "GraphInterrupt" in type(exc).__name__:
+                logger.info("Graph paused again during resume")
+            else:
+                raise
 
-        state = self._graph.get_state(self._config)
-        if state and state.values:
-            final_state = state.values
+        # Retrieve final state
+        try:
+            state = self._graph.get_state(self._config)
+            if state and state.values:
+                final_state = state.values
+        except ValueError:
+            logger.debug("No checkpointer — cannot retrieve resumed state")
 
         self._final_state = final_state
         return final_state
@@ -295,6 +325,8 @@ class LangGraphDelegate(LoopDelegate):
                 "spec_review": None,
                 "code_quality_review": None,
                 "review_stage": "spec",
+                "review_iteration": 0,
+                "max_review_iterations": 3,
                 "final_code": "",
                 "pending_tasks": [],
                 "completed_tasks": [],

@@ -58,13 +58,18 @@ def _route_after_approval(state: PairCodingState) -> Literal["coder", "done"]:
     return "coder"
 
 
-def _route_next_task(state: MultiAgentState) -> Literal["implementer", "spec_reviewer", "finalize"]:
+def _route_next_task(state: MultiAgentState) -> Literal["implementer", "spec_reviewer", "code_quality_reviewer", "finalize"]:
     """Conditional routing from task_router.
 
     Has PENDING tasks → implementer
     All tasks done, review not started → spec_reviewer
     Review done → finalize
+    Blocked (terminal) → finalize (error terminal)
     """
+    # Check for blocked/error terminal state
+    if state.get("terminal_reason") == "blocked":
+        return "finalize"
+
     review_stage = state.get("review_stage", "spec")
     task_list = state.get("task_list", [])
 
@@ -77,7 +82,7 @@ def _route_next_task(state: MultiAgentState) -> Literal["implementer", "spec_rev
     if review_stage == "spec":
         return "spec_reviewer"
     elif review_stage == "code_quality":
-        return "spec_reviewer"  # spec_reviewer handles both stages
+        return "code_quality_reviewer"
     else:
         return "finalize"
 
@@ -286,6 +291,7 @@ def build_multi_agent_graph(
         {
             "implementer": "implementer",
             "spec_reviewer": "spec_reviewer",
+            "code_quality_reviewer": "code_quality_reviewer",
             "finalize": "finalize",
         },
     )

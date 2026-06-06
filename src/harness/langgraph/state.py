@@ -108,6 +108,8 @@ class MultiAgentState(BaseAgentState):
     spec_review: Optional[ReviewResult]
     code_quality_review: Optional[ReviewResult]
     review_stage: Literal["spec", "code_quality", "done"]
+    review_iteration: int              # Review-specific cycle counter
+    max_review_iterations: int         # Max review cycles before forced termination
     final_code: str                    # Accumulated implementation output
     pending_tasks: list[str]           # IDs of tasks ready to execute
     completed_tasks: list[str]         # IDs of completed tasks

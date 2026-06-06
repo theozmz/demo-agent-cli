@@ -159,8 +159,8 @@ class LangGraphSubAgentManager(SubAgentManager):
 
         # Use the base spawn method with our config
         cfg = LangGraphSubAgentConfig(
-            max_turns=30,
-            timeout_seconds=300,
+            max_turns=500,
+            timeout_seconds=3600,
             write_access=True,
             allowed_tools=allowed_tools,
             model=model,

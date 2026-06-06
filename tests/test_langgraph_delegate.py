@@ -21,8 +21,11 @@ def mock_graph():
             "data": {"output": {"terminal_reason": "completed", "code": "print('hello')"}},
         }
     graph.astream_events = mock_stream
-    # Mock get_state
-    graph.get_state.return_value = MagicMock(values={"code": "print('hello')", "terminal_reason": "completed"})
+    # Mock get_state — next=() means no interrupt pending (graph completed)
+    state_mock = MagicMock()
+    state_mock.values = {"code": "print('hello')", "terminal_reason": "completed"}
+    state_mock.next = ()  # empty = no pending nodes, graph completed
+    graph.get_state.return_value = state_mock
     graph.update_state = MagicMock()
     return graph
 

@@ -15,7 +15,7 @@ class TestConfig:
         config = Config()
         assert config.llm.model == "claude-sonnet-4-6-20250514"
         assert config.llm.provider == "anthropic"
-        assert config.loop.max_turns == 30
+        assert config.loop.max_turns == 500
         assert config.loop.engine == "native"
 
     def test_load_from_toml(self):

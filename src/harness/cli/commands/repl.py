@@ -144,7 +144,7 @@ async def _repl_loop(
                     _read_stream(proc.stdout, ""),
                     _read_stream(proc.stderr, "[red]"),
                 ),
-                timeout=300,  # 5-minute hard cap per task
+                timeout=3600,  # 1-hour hard cap per task
             )
             await proc.wait()
 
@@ -281,10 +281,10 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
         start = time.monotonic()
         try:
             outcome = asyncio.run(
-                asyncio.wait_for(loop.run(on_event=_on_repl_event), timeout=300)
+                asyncio.wait_for(loop.run(on_event=_on_repl_event), timeout=3600)
             )
         except asyncio.TimeoutError:
-            console.print("[yellow]Turn timed out after 5 minutes.[/yellow]")
+            console.print("[yellow]Turn timed out after 1 hour.[/yellow]")
             task_logger.log_task_end(
                 outcome="timeout",
                 total_duration_ms=(time.monotonic() - start) * 1000,

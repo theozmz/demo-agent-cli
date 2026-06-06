@@ -15,6 +15,7 @@ All nodes use factory functions (closures) for infrastructure injection.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -196,12 +197,20 @@ def make_task_router_node() -> Callable:
                 for t in task_list
             )
             if all_done:
+                # Preserve review_stage if set by remediation (cap reached)
+                current_stage = state.get("review_stage", "spec")
+                if current_stage == "done":
+                    return {}  # No state changes — let existing stage route correctly
                 return {
                     "review_stage": "spec",
                 }
-            # Some tasks are BLOCKED — need controller to resolve
-            logger.warning("Task router: no ready tasks, but %d remain", len(task_list) - len(completed))
-            return {"review_stage": "spec"}  # Fall through to review
+            # Some tasks are BLOCKED — can't proceed
+            remaining = len([t for t in task_list if t.get("status") not in ("DONE", "DONE_WITH_CONCERNS")])
+            logger.warning("Task router: no ready tasks, but %d remain blocked", remaining)
+            return {
+                "errors": [f"Task DAG blocked: {remaining} tasks cannot proceed due to unmet dependencies or blocked status"],
+                "terminal_reason": "blocked",
+            }
 
         # Select the first ready task (respects dependency order)
         idx = ready[0]
@@ -232,47 +241,49 @@ def make_implementer_node(
 ) -> Callable:
     """Create an implementer node.
 
-    Spawns a LangGraphSubAgentManager-backed sub-agent to execute one task.
-    The sub-agent:
+    Spawns sub-agents to execute tasks. Each sub-agent:
     - Gets curated context (plan excerpt + task description only)
     - Has write tool access (unlike existing read-only AgentTool sub-agents)
     - Uses the model tier determined by complexity assessment
     - Reports status via the implementer report protocol
 
     Args:
-        fan_out: If True, spawn parallel implementers for all ready tasks.
+        fan_out: If True, spawn parallel implementers for all ready tasks
+                 via asyncio.gather().
     """
 
-    async def node_implementer(state: MultiAgentState) -> dict:
-        task_list = list(state.get("task_list", []))
-        idx = state.get("current_task_index", 0)
-        plan = state.get("plan", "")
-        iteration = state.get("iteration", 0)
+    IMPLEMENTER_SYSTEM = (
+        "You are an expert implementer. Execute the assigned task. "
+        "Use the available tools to read and write files. "
+        "You also have access to an 'agent' sub-delegation tool — use it "
+        "to spawn read-only sub-agents for research, code exploration, "
+        "or gathering context before making complex changes. "
+        "Be thorough — implement the complete solution. "
+        "Always report your status at the end."
+    )
 
-        if idx >= len(task_list):
-            return {"errors": [f"Invalid task index: {idx}"]}
+    async def _execute_single_task(
+        task: dict,
+        task_list: list,
+        plan: str,
+        completed: set,
+    ) -> tuple[int, str, str]:
+        """Execute a single task via sub-agent. Returns (task_index, status, result_text)."""
+        from harness.llm.types import ChatMessage as CM
+        from harness.core.loop import AgenticLoop, ChatDelegate, LoopConfig
+        from harness.core.loop_delegate import LoopContext
 
-        task = task_list[idx]
-        task_id = task.get("id", f"task-{idx}")
+        task_id = task.get("id", "unknown")
         description = task.get("description", "")
-        complexity_str = task.get("complexity", "integration")
 
-        # Parse complexity tier
-        try:
-            complexity = ComplexityTier(complexity_str)
-        except ValueError:
-            complexity = ComplexityTier.INTEGRATION
+        # Find task index in list
+        idx = next(i for i, t in enumerate(task_list) if t.get("id") == task_id)
 
-        logger.info(
-            "Implementer: executing task '%s' (complexity=%s, idx=%d)",
-            task_id, complexity.value, idx,
-        )
-
-        # Build the implementer prompt with curated context
         prompt = (
             f"## Implementation Plan\n{plan}\n\n"
             f"## Your Task ({task_id})\n{description}\n\n"
-            f"Implement this task completely. You have access to file tools.\n\n"
+            f"Implement this task completely. You have access to file tools "
+            f"and the agent tool for sub-delegation.\n\n"
             f"## Output Protocol\n"
             f"When done, report your status on a new line:\n"
             f"- STATUS: DONE\n"
@@ -281,19 +292,9 @@ def make_implementer_node(
             f"- STATUS: BLOCKED (by what dependency)\n"
         )
 
-        # Run the implementer sub-agent via the existing AgenticLoop
-        from harness.llm.types import ChatMessage as CM
-        from harness.core.loop import AgenticLoop, ChatDelegate, LoopConfig
-        from harness.core.loop_delegate import LoopContext
-
         sub_ctx = LoopContext(
             messages=[CM.user(prompt)],
-            system_prompt=(
-                "You are an expert implementer. Execute the assigned task. "
-                "Use the available tools to read and write files. "
-                "Be thorough — implement the complete solution. "
-                "Always report your status at the end."
-            ),
+            system_prompt=IMPLEMENTER_SYSTEM,
             tool_registry=tool_registry,
             llm=llm,
             cwd="",
@@ -305,39 +306,135 @@ def make_implementer_node(
             tool_executor=tool_executor,
             gatherer=context_gatherer,
         )
-        loop_config = LoopConfig(max_turns=20)
+        loop_config = LoopConfig(max_turns=10)
 
         try:
             loop = AgenticLoop(delegate=delegate, ctx=sub_ctx, config=loop_config)
             outcome = await loop.run()
             result_text = outcome.content or ""
         except Exception as exc:
-            logger.error("Implementer sub-agent failed: %s", exc)
+            logger.error("Implementer sub-agent failed for '%s': %s", task_id, exc)
             result_text = f"STATUS: BLOCKED\nError: {exc}"
 
-        # Parse implementer status from output
         status = _parse_implementer_status(result_text)
+        return idx, status, result_text
+
+    async def node_implementer(state: MultiAgentState) -> dict:
+        task_list = list(state.get("task_list", []))
+        plan = state.get("plan", "")
+        iteration = state.get("iteration", 0)
+        completed = set(state.get("completed_tasks", []))
+
+        if fan_out:
+            # Identify ALL ready tasks (PENDING or IN_PROGRESS + all deps satisfied)
+            ready_indices = []
+            for i, task in enumerate(task_list):
+                if task.get("status") not in ("PENDING", "IN_PROGRESS"):
+                    continue
+                deps = set(task.get("dependencies", []))
+                if deps.issubset(completed):
+                    ready_indices.append(i)
+
+            if not ready_indices:
+                logger.warning("Fan-out implementer: no ready tasks found")
+                return {
+                    "iteration": iteration,
+                }
+
+            logger.info(
+                "Fan-out implementer: executing %d tasks in parallel (indices: %s)",
+                len(ready_indices), ready_indices,
+            )
+
+            # Mark all ready tasks as IN_PROGRESS
+            for idx in ready_indices:
+                task_list[idx]["status"] = "IN_PROGRESS"
+
+            # Execute all ready tasks in parallel
+            tasks_to_run = [task_list[i] for i in ready_indices]
+            results = await asyncio.gather(
+                *[_execute_single_task(t, task_list, plan, completed) for t in tasks_to_run],
+                return_exceptions=True,
+            )
+
+            # Collect results
+            all_completed = list(completed)
+            all_results = dict(state.get("implementation_results", {}))
+
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error("Fan-out task failed with exception: %s", result)
+                    continue
+                idx, status, result_text = result
+                task = task_list[idx]
+                task_id = task.get("id", f"task-{idx}")
+                task["status"] = status
+                task["result"] = result_text
+                task["assigned_to"] = f"implementer-{task_id}"
+                task_list[idx] = task
+
+                if status in ("DONE", "DONE_WITH_CONCERNS"):
+                    if task_id not in all_completed:
+                        all_completed.append(task_id)
+                all_results[task_id] = result_text
+
+            pending = [t["id"] for t in task_list if t.get("status") in ("PENDING", "IN_PROGRESS", "BLOCKED")]
+
+            return {
+                "task_list": task_list,
+                "iteration": iteration + 1,
+                "completed_tasks": all_completed,
+                "pending_tasks": pending,
+                "implementation_results": all_results,
+            }
+
+        # Sequential mode: single task at current_task_index
+        idx = state.get("current_task_index", 0)
+
+        if idx >= len(task_list):
+            return {"errors": [f"Invalid task index: {idx}"]}
+
+        task = task_list[idx]
+        task_id = task.get("id", f"task-{idx}")
+        complexity_str = task.get("complexity", "integration")
+
+        try:
+            complexity = ComplexityTier(complexity_str)
+        except ValueError:
+            complexity = ComplexityTier.INTEGRATION
+
+        logger.info(
+            "Implementer: executing task '%s' (complexity=%s, idx=%d)",
+            task_id, complexity.value, idx,
+        )
+
+        result_idx, status, result_text = await _execute_single_task(
+            task, task_list, plan, completed,
+        )
 
         # Update task
-        task["status"] = status
-        task["result"] = result_text
-        task["assigned_to"] = f"implementer-{task_id}"
-        task_list[idx] = task
+        task_list[result_idx] = {
+            **task_list[result_idx],
+            "status": status,
+            "result": result_text,
+            "assigned_to": f"implementer-{task_id}",
+        }
 
         # Track completion
-        completed = list(state.get("completed_tasks", []))
+        all_completed = list(state.get("completed_tasks", []))
         if status in ("DONE", "DONE_WITH_CONCERNS"):
-            if task_id not in completed:
-                completed.append(task_id)
+            if task_id not in all_completed:
+                all_completed.append(task_id)
 
         pending = [t["id"] for t in task_list if t.get("status") in ("PENDING", "IN_PROGRESS", "BLOCKED")]
 
         return {
             "task_list": task_list,
             "iteration": iteration + 1,
-            "completed_tasks": completed,
+            "completed_tasks": all_completed,
             "pending_tasks": pending,
             "implementation_results": {
+                **state.get("implementation_results", {}),
                 task_id: result_text,
             },
         }
@@ -566,6 +663,19 @@ def make_remediation_node() -> Callable:
         spec = state.get("spec_review")
         quality = state.get("code_quality_review")
         task_list = list(state.get("task_list", []))
+        review_iter = state.get("review_iteration", 0)
+        max_review = state.get("max_review_iterations", 3)
+
+        # Enforce review iteration cap to prevent infinite remediation loops
+        if review_iter >= max_review:
+            logger.warning(
+                "Remediation: max review iterations (%d) reached — "
+                "terminating with partial fixes", max_review,
+            )
+            return {
+                "review_stage": "done",
+                "terminal_reason": "max_review_iterations",
+            }
 
         issues: list[str] = []
         if spec and not spec.get("passed", False):
@@ -590,11 +700,13 @@ def make_remediation_node() -> Callable:
             }
             task_list.append(fix_task)
 
-        logger.info("Remediation: created %d fix tasks", len(issues))
+        logger.info("Remediation: created %d fix tasks (review cycle %d/%d)",
+                    len(issues), review_iter + 1, max_review)
 
         return {
             "task_list": task_list,
             "review_stage": "spec",
+            "review_iteration": review_iter + 1,
             "pending_tasks": [t["id"] for t in task_list if t["status"] == "PENDING"],
         }
 
