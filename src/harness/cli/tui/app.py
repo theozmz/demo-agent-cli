@@ -136,15 +136,22 @@ class HarnessTui(App):
                 timeout=3600,
             )
             self._status.snapshot_totals()
-            if outcome.content:
+            if outcome.kind == "completed" and outcome.content:
                 log.write(f"[bold green]Agent:[/] {outcome.content}")
                 self._messages.append(ChatMessage.assistant(outcome.content))
                 self._status.current_instruction = "idle"
-            else:
+            elif outcome.kind == "error":
                 log.write(f"[red]Error: {outcome.content}[/red]")
+                self._status.current_instruction = "idle"
+            else:
+                log.write(f"[dim]({outcome.kind})[/dim]")
                 self._status.current_instruction = "idle"
         except asyncio.TimeoutError:
             log.write("[yellow]Turn timed out.[/yellow]")
+            self._status.current_instruction = "idle"
+            self._status.current_turn = 0
+        except Exception as exc:
+            log.write(f"[red]Unexpected error: {exc}[/red]")
             self._status.current_instruction = "idle"
             self._status.current_turn = 0
 

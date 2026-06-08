@@ -106,6 +106,11 @@ def handle_run(
                 f"[bold cyan]🚀 Auto-triggered LangGraph multi-agent "
                 f"(mode={selection.mode})[/bold cyan]"
             )
+        else:
+            console.print(
+                f"[yellow]Warning: Gate selected langgraph/{selection.mode} "
+                f"but build failed — falling back to native mode[/yellow]"
+            )
 
     if delegate is not None:
         delegate._mode = selection.mode  # Ensure mode matches selection

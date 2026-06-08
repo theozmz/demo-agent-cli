@@ -115,9 +115,7 @@ async def _repl_loop(
         )
 
         # --- build subprocess command ---
-        cmd = [harness_exe, "run", text]
-        if config_arg:
-            cmd = [harness_exe, config_arg, "run", text]
+        cmd = [harness_exe, *config_arg, "run", text]
         if debug:
             cmd.extend(["-d"])
 
@@ -140,17 +138,21 @@ async def _repl_loop(
                     if decoded:
                         console.print(f"{prefix}{decoded}")
 
-            _, _ = await asyncio.wait_for(
+            results = await asyncio.wait_for(
                 asyncio.gather(
                     _read_stream(proc.stdout, ""),
                     _read_stream(proc.stderr, "[red]"),
+                    return_exceptions=True,
                 ),
                 timeout=3600,  # 1-hour hard cap per task
             )
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.warning("Stream reader error: %s", r)
             await proc.wait()
 
         except asyncio.TimeoutError:
-            console.print("[yellow]Task timed out after 5 minutes.[/yellow]")
+            console.print("[yellow]Task timed out after 1 hour.[/yellow]")
             try:
                 proc.kill()
                 await proc.wait()
@@ -159,7 +161,7 @@ async def _repl_loop(
             repl_logger.log_task_end(
                 outcome="timeout",
                 total_duration_ms=(time.monotonic() - start) * 1000,
-                error="Task timed out after 5 minutes",
+                error="Task timed out",
             )
             repl_logger.close()
             continue
@@ -171,7 +173,6 @@ async def _repl_loop(
                 error=str(exc),
             )
             repl_logger.close()
-            continue
             continue
 
         duration_ms = (time.monotonic() - start) * 1000
@@ -402,16 +403,13 @@ def _find_harness_exe() -> str | None:
     return found
 
 
-def _config_arg(ctx: AppContext) -> str:
-    """If a specific config path was used, return the CLI arg to propagate it."""
-    # We don't have a reference to the original config path after load,
-    # but if the user passed -c, propagate it via environment variable.
-    # For simplicity, we use HARNESS_CONFIG env var as a signal.
+def _config_arg(ctx: AppContext) -> list[str]:
+    """If a specific config path was used, return the CLI args to propagate it."""
     import os
     cfg_path = os.environ.get("HARNESS_CONFIG", "")
     if cfg_path:
-        return f"-c {cfg_path}"
-    return ""
+        return ["-c", cfg_path]
+    return []
 
 
 # ---------------------------------------------------------------------------

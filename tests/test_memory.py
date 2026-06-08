@@ -22,39 +22,39 @@ class TestMemoryStore:
 
     @pytest.mark.asyncio
     async def test_write_and_read(self, store):
-        await store.write("key1", "value1")
-        result = await store.read("key1")
+        store.write("key1", "value1")
+        result = store.read("key1")
         assert result == "value1"
 
     @pytest.mark.asyncio
     async def test_read_missing_key(self, store):
-        result = await store.read("nonexistent")
+        result = store.read("nonexistent")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_delete(self, store):
-        await store.write("key2", "value2")
-        deleted = await store.delete("key2")
+        store.write("key2", "value2")
+        deleted = store.delete("key2")
         assert deleted is True
-        assert await store.read("key2") is None
+        assert store.read("key2") is None
 
     @pytest.mark.asyncio
     async def test_delete_missing(self, store):
-        deleted = await store.delete("nonexistent")
+        deleted = store.delete("nonexistent")
         assert deleted is False
 
     @pytest.mark.asyncio
     async def test_overwrite(self, store):
-        await store.write("key3", "v1")
-        await store.write("key3", "v2")
-        assert await store.read("key3") == "v2"
+        store.write("key3", "v1")
+        store.write("key3", "v2")
+        assert store.read("key3") == "v2"
 
     @pytest.mark.asyncio
     async def test_list_keys(self, store):
-        await store.write("a", "1")
-        await store.write("b", "2")
-        await store.write("c", "3")
-        keys = await store.list_keys()
+        store.write("a", "1")
+        store.write("b", "2")
+        store.write("c", "3")
+        keys = store.list_keys()
         assert len(keys) == 3
         assert "a" in keys
         assert "b" in keys
@@ -78,7 +78,7 @@ class TestMemoryTools:
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
     async def test_read_tool(self, store, ctx):
-        await store.write("greeting", "hello")
+        store.write("greeting", "hello")
         tool = MemoryReadTool()
         tool.wire_store(store)
         output = await tool.execute({"key": "greeting"}, ctx)
@@ -102,29 +102,29 @@ class TestMemoryTools:
         tool.wire_store(store)
         output = await tool.execute({"key": "name", "value": "harness"}, ctx)
         assert not output.is_error
-        stored = await store.read("name")
+        stored = store.read("name")
         assert stored == "harness"
 
     @pytest.mark.asyncio
     async def test_write_tool_overwrite(self, store, ctx):
-        await store.write("count", "1")
+        store.write("count", "1")
         tool = MemoryWriteTool()
         tool.wire_store(store)
         output = await tool.execute({"key": "count", "value": "2"}, ctx)
         assert not output.is_error
-        assert await store.read("count") == "2"
+        assert store.read("count") == "2"
 
     # ------------------------------------------------------------------
     # delete
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
     async def test_delete_tool(self, store, ctx):
-        await store.write("temp", "data")
+        store.write("temp", "data")
         tool = MemoryDeleteTool()
         tool.wire_store(store)
         output = await tool.execute({"key": "temp"}, ctx)
         assert not output.is_error
-        assert await store.read("temp") is None
+        assert store.read("temp") is None
 
     @pytest.mark.asyncio
     async def test_delete_tool_missing(self, store, ctx):
@@ -171,7 +171,7 @@ class TestMemoryWithTracing:
     @pytest.mark.asyncio
     async def test_read_works_with_noop_backend(self, store, ctx):
         """MemoryReadTool works correctly even when observability is noop."""
-        await store.write("greeting", "hello")
+        store.write("greeting", "hello")
         tool = MemoryReadTool()
         tool.wire_store(store)
         output = await tool.execute({"key": "greeting"}, ctx)
@@ -185,15 +185,15 @@ class TestMemoryWithTracing:
         tool.wire_store(store)
         output = await tool.execute({"key": "tracing_test", "value": "v"}, ctx)
         assert not output.is_error
-        stored = await store.read("tracing_test")
+        stored = store.read("tracing_test")
         assert stored == "v"
 
     @pytest.mark.asyncio
     async def test_delete_works_with_noop_backend(self, store, ctx):
         """MemoryDeleteTool works correctly even when observability is noop."""
-        await store.write("tmp", "data")
+        store.write("tmp", "data")
         tool = MemoryDeleteTool()
         tool.wire_store(store)
         output = await tool.execute({"key": "tmp"}, ctx)
         assert not output.is_error
-        assert await store.read("tmp") is None
+        assert store.read("tmp") is None

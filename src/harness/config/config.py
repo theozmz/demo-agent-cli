@@ -6,8 +6,11 @@ import os
 from pathlib import Path
 from typing import Literal
 
+import logging
 import tomllib
 from pydantic import BaseModel, Field
+
+from harness.core.errors import ConfigValidationError
 
 
 class LlmConfig(BaseModel):
@@ -30,6 +33,7 @@ class LoopConfig(BaseModel):
     mode: Literal["standard", "pair_coding", "multi_agent"] = "standard"
     max_turns: int = Field(default=500, ge=1, le=500)
     compaction_threshold: float = Field(default=0.80, ge=0.5, le=0.95)
+    enable_tool_intent_nudge: bool = False
     human_approval: bool = True
     max_review_iterations: int = Field(default=5, ge=1, le=20)
     # Autonomous mode selection (ComplexityGate)
@@ -97,15 +101,26 @@ class Config(BaseModel):
             path = cls._find_config()
         data: dict = {}
         if path and Path(path).exists():
-            with open(path, "rb") as f:
-                data = tomllib.load(f)
+            try:
+                with open(path, "rb") as f:
+                    data = tomllib.load(f)
+            except tomllib.TOMLDecodeError as e:
+                raise ConfigValidationError(f"Invalid TOML in {path}: {e}") from e
         # Deep-merge harness.local.toml when present alongside the base config
         if path:
             local_path = Path(path).with_name("harness.local.toml")
             if local_path.exists():
-                with open(local_path, "rb") as f:
-                    local_data = tomllib.load(f)
+                try:
+                    with open(local_path, "rb") as f:
+                        local_data = tomllib.load(f)
+                except tomllib.TOMLDecodeError as e:
+                    raise ConfigValidationError(f"Invalid TOML in {local_path}: {e}") from e
                 cls._deep_merge(data, local_data)
+        # Warn about unknown config keys
+        _log = logging.getLogger(__name__)
+        for key in data:
+            if key not in cls.model_fields:
+                _log.warning("Unknown config section [%s] — ignored", key)
         config = cls(**{k: v for k, v in data.items() if k in cls.model_fields})
         config._apply_env_overrides()
         return config

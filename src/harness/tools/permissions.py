@@ -61,10 +61,14 @@ class PermissionPolicy:
             case ApprovalRequirement.NEVER:
                 return PermissionOutcome.ALLOW
             case ApprovalRequirement.ALWAYS:
-                if ctx.auto_approve or ctx.is_interactive:
+                if ctx.auto_approve:
+                    return PermissionOutcome.ALLOW
+                if ctx.is_interactive:
                     return PermissionOutcome.NEEDS_APPROVAL
                 return PermissionOutcome.DENY
             case ApprovalRequirement.UNLESS_AUTO:
                 if ctx.auto_approve:
                     return PermissionOutcome.ALLOW
                 return PermissionOutcome.NEEDS_APPROVAL
+            case _:
+                return PermissionOutcome.DENY

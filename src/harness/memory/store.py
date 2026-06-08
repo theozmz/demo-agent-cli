@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import sqlite3
 from pathlib import Path
@@ -30,24 +31,26 @@ class MemoryStore:
         )
         self._db.commit()
 
-    async def read(self, key: str) -> str | None:
+    def read(self, key: str) -> str | None:
         row = self._db.execute("SELECT value FROM memories WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
 
-    async def write(self, key: str, value: str) -> None:
-        import datetime
-        now = datetime.datetime.utcnow().isoformat()
+    def write(self, key: str, value: str) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._db.execute(
             "INSERT OR REPLACE INTO memories (key, value, updated_at) VALUES (?, ?, ?)",
             (key, value, now),
         )
         self._db.commit()
 
-    async def delete(self, key: str) -> bool:
+    def delete(self, key: str) -> bool:
         cur = self._db.execute("DELETE FROM memories WHERE key = ?", (key,))
         self._db.commit()
         return cur.rowcount > 0
 
-    async def list_keys(self) -> list[str]:
+    def list_keys(self) -> list[str]:
         rows = self._db.execute("SELECT key FROM memories ORDER BY updated_at DESC").fetchall()
         return [r[0] for r in rows]
+
+    def close(self) -> None:
+        self._db.close()

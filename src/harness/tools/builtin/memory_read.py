@@ -46,7 +46,7 @@ class MemoryReadTool(Tool):
             return ToolOutput(content="Error: memory store not wired", is_error=True)
 
         key = params["key"]
-        value = await self._store.read(key)
+        value = self._store.read(key)
         if value is None:
             return ToolOutput(content=f"(no memory found for key: {key})")
         return ToolOutput(content=value)

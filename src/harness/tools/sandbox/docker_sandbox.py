@@ -147,15 +147,23 @@ class DockerSandbox(SandboxRuntime):
                 environment=env or {},
                 user="1000",
                 workdir=cwd,
+                demux=True,
             )
             duration_ms = (time.monotonic() - start) * 1000
 
             exit_code = exec_result.exit_code
             output = exec_result.output
-            text = output.decode("utf-8", errors="replace") if output else ""
+            if isinstance(output, tuple) and len(output) == 2:
+                stdout_bytes, stderr_bytes = output
+                stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+                stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            else:
+                text = output.decode("utf-8", errors="replace") if output else ""
+                stdout = text
+                stderr = ""
             return SandboxResult(
-                stdout=text,
-                stderr="",
+                stdout=stdout,
+                stderr=stderr,
                 exit_code=exit_code if exit_code is not None else 0,
                 duration_ms=duration_ms,
             )

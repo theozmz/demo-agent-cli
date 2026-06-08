@@ -35,20 +35,44 @@ class SafetyLayer:
         self.leak_detector = LeakDetector()
 
     def scan_input(self, text: str) -> SafetyResult:
-        """Scan user input for injection attempts."""
-        matches = self.sanitizer.scan(text)
-        if matches:
-            logger.warning(f"Injection patterns detected: {matches}")
+        """Scan user input for injection attempts and secret leaks."""
+        injection_matches = self.sanitizer.scan(text)
+        if injection_matches:
+            logger.warning(f"Injection patterns detected: {injection_matches}")
             return SafetyResult(
                 passed=False,
                 blocked=True,
-                reason=f"Injection patterns: {matches}",
-                content=text,
+                reason=f"Injection patterns: {injection_matches}",
+                content="",
             )
+        # Also scan input for leaked secrets
+        redacted, findings = self.leak_detector.redact(text)
+        if self.leak_detector.has_blocked(findings):
+            blocked_types = [f.secret_type for f in findings if f.severity.name == "BLOCK"]
+            logger.warning(f"Blocked secret types in input: {blocked_types}")
+            return SafetyResult(
+                passed=False,
+                blocked=True,
+                reason=f"Secret leak detected: {blocked_types}",
+                content="",
+                findings=findings,
+            )
+        if findings:
+            return SafetyResult(redacted=True, content=redacted, findings=findings)
         return SafetyResult(content=text)
 
     def scan_output(self, text: str, tool_name: str = "") -> SafetyResult:
-        """Scan tool output for leaked secrets."""
+        """Scan tool output for leaked secrets and injection attempts."""
+        # Scan for injection patterns in output too
+        injection_matches = self.sanitizer.scan(text)
+        if injection_matches:
+            logger.warning(f"Injection patterns in {tool_name} output: {injection_matches}")
+            return SafetyResult(
+                passed=False,
+                blocked=True,
+                reason=f"Injection patterns in output: {injection_matches}",
+                content="",
+            )
         redacted, findings = self.leak_detector.redact(text)
 
         if self.leak_detector.has_blocked(findings):

@@ -51,5 +51,5 @@ class MemoryWriteTool(Tool):
 
         key = params["key"]
         value = params["value"]
-        await self._store.write(key, value)
+        self._store.write(key, value)
         return ToolOutput(content=f"Memory stored: {key}")

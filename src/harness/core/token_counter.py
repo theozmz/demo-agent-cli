@@ -58,9 +58,8 @@ class TokenCounter:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-    total_cost_est: float = 0.0
     call_count: int = 0
-    _model: str = ""
+    _model_totals: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     def add(self, usage: "LlmUsage", model: str = "") -> None:
         """Add one LLM call's usage to the counter."""
@@ -70,7 +69,8 @@ class TokenCounter:
         self.cache_write_tokens += getattr(usage, "cache_creation_input_tokens", 0)
         self.call_count += 1
         if model:
-            self._model = model
+            prev = self._model_totals.get(model, (0, 0))
+            self._model_totals[model] = (prev[0] + usage.input_tokens, prev[1] + usage.output_tokens)
 
     @property
     def total(self) -> int:
@@ -78,10 +78,11 @@ class TokenCounter:
 
     @property
     def cost_est(self) -> float:
-        """Recompute cost from current totals."""
-        if self._model:
-            return _estimate_cost(self._model, self.input_tokens, self.output_tokens)
-        return self.total_cost_est
+        """Recompute cost from per-model totals."""
+        total = 0.0
+        for model, (inp, out) in self._model_totals.items():
+            total += _estimate_cost(model, inp, out)
+        return total
 
     def format_last_call(self, usage: "LlmUsage") -> str:
         """Format the most recent call: '📊 8.2k in / 1.5k out'."""

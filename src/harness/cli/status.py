@@ -41,9 +41,9 @@ _DEFAULT_CONTEXT_WINDOW = 200_000
 def _detect_context_window(model: str) -> int:
     """Return the known context window size for a model, or the default."""
     key = model.lower().split("/")[-1]
-    for prefix, size in _KNOWN_CONTEXT_WINDOWS.items():
+    for prefix in sorted(_KNOWN_CONTEXT_WINDOWS, key=len, reverse=True):
         if key.startswith(prefix):
-            return size
+            return _KNOWN_CONTEXT_WINDOWS[prefix]
     return _DEFAULT_CONTEXT_WINDOW
 
 

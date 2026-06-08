@@ -27,6 +27,8 @@ class ToolRegistry:
 
     def register(self, tool: Tool, source: Literal["builtin", "mcp", "plugin"] = "builtin"):
         """Register a tool, validating its schema first."""
+        if not tool.name:
+            raise ValueError(f"Tool has empty name — all tools must set 'name'")
         if tool.name in self._tools:
             existing = self._tools[tool.name]
             if source == "builtin" and getattr(existing, "_source", "") == "mcp":
@@ -45,6 +47,19 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         """Look up a tool by name."""
         return self._tools.get(name)
+
+    def unregister(self, name: str) -> bool:
+        """Remove a tool by name. Returns True if the tool was removed."""
+        if name not in self._tools:
+            return False
+        del self._tools[name]
+        if name in self._builtin_names:
+            self._builtin_names.remove(name)
+        if name in self._mcp_names:
+            self._mcp_names.remove(name)
+        self._schema_cache.pop(name, None)
+        self._sorted_cache = None
+        return True
 
     def all_tools(self, enabled_only: bool = True) -> list[Tool]:
         """Return all tools in cache-stable order (builtins alpha → MCP alpha)."""

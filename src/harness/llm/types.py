@@ -18,11 +18,12 @@ class SystemPromptPart(Enum):
 class ChatMessage:
     """A single chat message in the LLM conversation."""
 
-    role: str  # "system" | "user" | "assistant"
+    role: str  # "system" | "user" | "assistant" | "tool"
     content: str = ""
     tool_calls: list["ToolCall"] | None = None
     tool_call_id: str | None = None
     name: str | None = None
+    is_error: bool = False
 
     @classmethod
     def system(cls, content: str) -> "ChatMessage":
@@ -43,8 +44,7 @@ class ChatMessage:
         Litellm translates this to the native format of whichever
         provider is configured (e.g. Anthropic user/tool_result blocks).
         """
-        prefix = "Error: " if is_error else ""
-        return cls(role="tool", content=prefix + content, tool_call_id=tool_call_id, name=name)
+        return cls(role="tool", content=content, tool_call_id=tool_call_id, name=name, is_error=is_error)
 
 
 @dataclass

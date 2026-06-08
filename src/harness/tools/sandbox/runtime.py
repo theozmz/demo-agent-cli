@@ -84,7 +84,7 @@ class NoOpSandbox(SandboxRuntime):
         command: str,
         *,
         timeout: int = 60,
-        cwd: str | None = None,
+        cwd: str = "/workspace",
         env: dict[str, str] | None = None,
     ) -> SandboxResult:
         import asyncio

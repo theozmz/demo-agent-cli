@@ -69,6 +69,7 @@ class TaskLogger:
         """Open (or reopen) the session log file in append mode."""
         if self._file:
             self._file.close()
+            self._file = None
         self._file = open(str(self._file_path), "a", encoding="utf-8")
 
     def _emit(self, event: str, **fields: Any) -> None:

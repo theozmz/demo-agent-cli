@@ -108,7 +108,7 @@ class Tool(ABC):
 
     @property
     def is_read_only(self) -> bool:
-        return False
+        return True
 
     def is_enabled(self) -> bool:
         return True

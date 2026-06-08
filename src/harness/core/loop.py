@@ -25,8 +25,9 @@ from harness.core.loop_delegate import (
 )
 from harness.core.context import ContextGatherer
 from harness.core.compaction import CompactionEngine, CompactionStrategy, TruncationTracker
-from harness.core.errors import MaxTurnsReachedError
+from harness.core.errors import MaxTurnsReachedError, RateLimitError, ServerError
 from harness.core.token_counter import TokenCounter
+from harness.config.config import LoopConfig
 
 if TYPE_CHECKING:
     from harness.logging.task_logger import TaskLogger
@@ -114,18 +115,6 @@ class LoopEvent:
 
 
 # ---------------------------------------------------------------------------
-# LoopConfig
-# ---------------------------------------------------------------------------
-@dataclass
-class LoopConfig:
-    """Configuration for the agent loop."""
-
-    max_turns: int = 500
-    compaction_threshold: float = 0.80
-    enable_tool_intent_nudge: bool = False
-
-
-# ---------------------------------------------------------------------------
 # ChatDelegate
 # ---------------------------------------------------------------------------
 class ChatDelegate(LoopDelegate):
@@ -145,10 +134,19 @@ class ChatDelegate(LoopDelegate):
         self._task_logger = task_logger
         self._session_id: str = ""
         self._workspace_root: str = ""
-        # Progress callback — set by AgenticLoop before calling call_llm
         self._on_event: Callable[[LoopEvent], None] | None = None
-        self.token_counter: "TokenCounter | None" = None  # set by AgenticLoop
-        self._status: "SessionStatus | None" = None  # set by AgenticLoop
+        self.token_counter: "TokenCounter | None" = None
+        self._status: "SessionStatus | None" = None
+
+    def wire_progress(
+        self,
+        on_event: Callable[[LoopEvent], None] | None = None,
+        token_counter: "TokenCounter | None" = None,
+        status: "SessionStatus | None" = None,
+    ) -> None:
+        self._on_event = on_event
+        self.token_counter = token_counter
+        self._status = status
 
     async def check_signals(self) -> LoopSignal:
         return self._signal
@@ -229,7 +227,10 @@ class ChatDelegate(LoopDelegate):
             except Exception as exc:
                 duration_ms = (time.monotonic() - llm_start) * 1000
                 err_msg = str(exc).lower()
-                is_transient = any(p in err_msg for p in _TRANSIENT_PATTERNS)
+                is_transient = (
+                    isinstance(exc, (RateLimitError, ServerError))
+                    or any(p in err_msg for p in _TRANSIENT_PATTERNS)
+                )
 
                 if self._task_logger:
                     self._task_logger.log_llm_call(
@@ -469,17 +470,14 @@ class AgenticLoop:
         iteration = 0
         final_text = ""
 
-        # Wire progress callback and status into the delegate
-        if hasattr(self.delegate, '_on_event'):
-            self.delegate._on_event = on_event
+        # Wire progress callback, token counter, and status into the delegate
         self._status = status
-        if status and hasattr(self.delegate, '_status'):
-            self.delegate._status = status
-
-        # Create TokenCounter and attach to delegate and status
         _counter = TokenCounter()
-        if hasattr(self.delegate, 'token_counter'):
-            self.delegate.token_counter = _counter
+        self.delegate.wire_progress(
+            on_event=on_event,
+            token_counter=_counter,
+            status=status,
+        )
         if self._status:
             self._status.token_counter = _counter
 
@@ -489,9 +487,8 @@ class AgenticLoop:
         _obs_backend = get_backend()
         _trace = None
         if not isinstance(_obs_backend, NoopBackend):
-            session_id = getattr(self.delegate, '_session_id', '')
             first_msg = self.ctx.messages[0].content if self.ctx.messages else ""
-            engine = getattr(self.config, 'engine', 'native')
+            engine = self.config.engine
             _trace = _obs_backend.create_trace(
                 name="agent_session",
                 session_id=session_id,
@@ -621,6 +618,8 @@ class AgenticLoop:
             # 6. Compaction check — emits G3 cross-dimensional harness signal
             if self._compaction_needed():
                 self._auto_compact(on_event)
+            else:
+                self._truncation_tracker.reset()
 
         outcome = LoopOutcome(
             kind="max_turns", content=final_text,

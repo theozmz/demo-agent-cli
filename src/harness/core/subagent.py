@@ -34,6 +34,7 @@ READ_ONLY_TOOLS = frozenset({
     "grep_search",
     "web_fetch",
     "web_search",
+    "memory_read",
 })
 
 
@@ -103,9 +104,12 @@ class SubAgentManager:
             # Build restricted tool registry (whitelist)
             allowed = cfg.allowed_tools or READ_ONLY_TOOLS
             sub_registry = ToolRegistry()
-            for tool in tool_registry.all():
+            for tool in tool_registry.all_tools():
                 if tool.name in allowed:
-                    sub_registry.register(tool)
+                    try:
+                        sub_registry.register(tool)
+                    except Exception as reg_err:
+                        logger.warning("Failed to register tool %s: %s", tool.name, reg_err)
 
             sub_executor = ToolExecutor(
                 registry=sub_registry,
@@ -113,13 +117,20 @@ class SubAgentManager:
             )
 
             # Build sub-context
-            blocks = context_gatherer.gather()
-            system_prompt = (
-                context_gatherer.to_system_prompt(blocks)
-                + "\n\nYou are a SUB-AGENT with restricted capabilities. "
-                + "Complete the assigned task and return a concise result. "
-                + "Do NOT ask clarifying questions — do your best with available information."
-            )
+            try:
+                blocks = context_gatherer.gather()
+                system_prompt = (
+                    context_gatherer.to_system_prompt(blocks)
+                    + "\n\nYou are a SUB-AGENT with restricted capabilities. "
+                    + "Complete the assigned task and return a concise result. "
+                    + "Do NOT ask clarifying questions — do your best with available information."
+                )
+            except Exception as ctx_err:
+                logger.error("Failed to build sub-agent context: %s", ctx_err)
+                return SubAgentResult(
+                    content=f"Sub-agent context build failed: {ctx_err}",
+                    outcome_kind="error",
+                )
 
             sub_ctx = LoopContext(
                 messages=[ChatMessage.user(task)],
@@ -137,7 +148,16 @@ class SubAgentManager:
                 loop = AgenticLoop(delegate=delegate, ctx=sub_ctx, config=loop_config)
                 return await loop.run()
 
-            outcome = await asyncio.wait_for(_run_sub(), timeout=cfg.timeout_seconds)
+            task = asyncio.create_task(_run_sub())
+            try:
+                outcome = await asyncio.wait_for(task, timeout=cfg.timeout_seconds)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise
 
             if self._status:
                 self._status.subagent_end(tag, outcome.kind)
@@ -200,8 +220,8 @@ class AgentTool(Tool):
                 "max_turns": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 30,
-                    "description": "Maximum tool-calling turns (default: 10)",
+                    "maximum": 50,
+                    "description": "Maximum tool-calling turns (default: 50)",
                 },
             },
             "required": ["task"],
@@ -229,7 +249,7 @@ class AgentTool(Tool):
             return ToolOutput(content="Agent tool not wired — missing infrastructure.", is_error=True)
 
         task = params.get("task", "")
-        max_turns = params.get("max_turns", 10)
+        max_turns = params.get("max_turns", 50)
 
         # Build a temporary LoopContext from the ToolContext to carry depth info
         parent_ctx = LoopContext(

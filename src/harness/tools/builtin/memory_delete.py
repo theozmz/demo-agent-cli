@@ -42,7 +42,7 @@ class MemoryDeleteTool(Tool):
             return ToolOutput(content="Error: memory store not wired", is_error=True)
 
         key = params["key"]
-        deleted = await self._store.delete(key)
+        deleted = self._store.delete(key)
         if deleted:
             return ToolOutput(content=f"Memory deleted: {key}")
         return ToolOutput(content=f"(no memory found for key: {key})")

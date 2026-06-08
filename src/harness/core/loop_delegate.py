@@ -69,3 +69,15 @@ class LoopDelegate(ABC):
     @abstractmethod
     async def after_iteration(self, iteration: int, ctx: LoopContext):
         ...
+
+    def wire_progress(
+        self,
+        on_event: "Callable[[LoopEvent], None] | None" = None,  # type: ignore[name-defined]
+        token_counter: "TokenCounter | None" = None,  # type: ignore[name-defined]
+        status: "SessionStatus | None" = None,  # type: ignore[name-defined]
+    ) -> None:
+        """Wire progress-callbacks and session state into the delegate.
+
+        Called by AgenticLoop before the main loop. Default no-op;
+        concrete delegates override to receive callbacks and state.
+        """

@@ -123,7 +123,7 @@ class LangGraphSubAgentManager(SubAgentManager):
 
         sub_registry = ToolRegistry()
         allowed_tools = IMPLEMENTER_TOOLS
-        for tool in tool_registry.all():
+        for tool in tool_registry.all_tools():
             if tool.name in allowed_tools:
                 sub_registry.register(tool)
 

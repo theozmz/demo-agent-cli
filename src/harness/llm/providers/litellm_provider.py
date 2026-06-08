@@ -75,6 +75,10 @@ class LiteLlmProvider(LlmClient):
         try:
             response = await acompletion(**request_kwargs)
         except Exception as e:
+            err_msg = str(e).lower()
+            if any(p in err_msg for p in ("context length", "too many tokens", "413", "reduce the length")):
+                from harness.core.errors import ContextOverflowError
+                raise ContextOverflowError(str(e)) from e
             logger.error(f"LLM call failed: {e}")
             raise
 
@@ -101,13 +105,31 @@ class LiteLlmProvider(LlmClient):
             request_kwargs["api_key"] = self.api_key
         if self.api_base:
             request_kwargs["api_base"] = self.api_base
+        # Pass caller-supplied overrides (temperature, max_tokens, etc.)
+        request_kwargs.update(kwargs)
 
+        start = time.monotonic()
         collected = []
-        async for chunk in await acompletion(**request_kwargs):
-            text = chunk.choices[0].delta.content if chunk.choices else ""
-            if text:
-                collected.append(text)
-                yield LlmResponse(text=text)
+        try:
+            async for chunk in await acompletion(**request_kwargs):
+                if chunk.choices and hasattr(chunk.choices[0], 'delta') and chunk.choices[0].delta:
+                    text = getattr(chunk.choices[0].delta, 'content', None)
+                    if text:
+                        collected.append(text)
+                        yield LlmResponse(text=text)
+        except Exception as e:
+            logger.error(f"LLM stream failed: {e}")
+            raise
+
+        # Yield final response with usage if available
+        duration_ms = (time.monotonic() - start) * 1000
+        yield LlmResponse(
+            text="".join(collected),
+            usage=LlmUsage(input_tokens=0, output_tokens=0),
+            model=self.model,
+            duration_ms=duration_ms,
+            stop_reason="end_turn",
+        )
 
     def estimate_tokens(self, messages: list[ChatMessage]) -> int:
         """Rough token estimation: words × 1.3 + 4 per message."""
@@ -123,7 +145,10 @@ class LiteLlmProvider(LlmClient):
         if system_prompt:
             result.append({"role": "system", "content": system_prompt})
         for msg in messages:
-            entry: dict = {"role": msg.role, "content": msg.content or ""}
+            content = msg.content or ""
+            if msg.is_error and msg.tool_call_id:
+                content = "Error: " + content
+            entry: dict = {"role": msg.role, "content": content}
             if msg.tool_calls:
                 entry["tool_calls"] = [
                     {

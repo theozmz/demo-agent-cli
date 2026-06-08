@@ -20,7 +20,10 @@ LEAK_PATTERNS: dict[str, tuple[str, LeakSeverity]] = {
     "aws_access_key": (r"AKIA[0-9A-Z]{16}", LeakSeverity.BLOCK),
     "aws_secret_key": (r"(?i)aws.{0,10}secret.{0,10}[0-9a-zA-Z/+]{40}", LeakSeverity.BLOCK),
     "github_token": (r"gh[pousr]_[A-Za-z0-9_]{20,}", LeakSeverity.BLOCK),
-    "private_key_pem": (r"-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----", LeakSeverity.BLOCK),
+    "private_key_pem": (r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----", LeakSeverity.BLOCK),
+    "google_api_key": (r"AIza[0-9A-Za-z_-]{35}", LeakSeverity.BLOCK),
+    "slack_token": (r"xox[abps]-[0-9A-Za-z_-]{10,}", LeakSeverity.BLOCK),
+    "gitlab_token": (r"glpat-[0-9A-Za-z_-]{20,}", LeakSeverity.BLOCK),
     "jwt_token": (r"eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}", LeakSeverity.REDACT),
     "generic_api_key": (r"(?i)(api[_-]?key|apikey|secret|token|password|auth)\s*[:=]\s*['\"]?[^\s'\"]{8,}['\"]?", LeakSeverity.REDACT),
 }
