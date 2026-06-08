@@ -29,6 +29,7 @@ from harness.cli.commands.run import add_run_subparser
 from harness.cli.commands.doctor import add_doctor_subparser
 from harness.cli.commands.repl import add_repl_subparser
 from harness.cli.commands.tui import add_tui_subparser
+from harness.cli.commands.eval import add_eval_subparser
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -115,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_doctor_subparser(subparsers, shared)
     add_repl_subparser(subparsers, shared)
     add_tui_subparser(subparsers, shared)
+    add_eval_subparser(subparsers, shared)
 
     return parser
 

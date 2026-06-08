@@ -154,3 +154,46 @@ class TestMemoryTools:
         tool = MemoryDeleteTool()
         output = await tool.execute({"key": "x"}, ctx)
         assert output.is_error
+
+
+# ===================================================================
+# TestMemoryWithTracing — verify memory tools work with NoopBackend
+# ===================================================================
+class TestMemoryWithTracing:
+    @pytest.fixture
+    def store(self, tmp_path):
+        return MemoryStore(db_path=str(tmp_path / "mem.db"))
+
+    @pytest.fixture
+    def ctx(self):
+        return ToolContext(cwd=".", session_id="test-tracing")
+
+    @pytest.mark.asyncio
+    async def test_read_works_with_noop_backend(self, store, ctx):
+        """MemoryReadTool works correctly even when observability is noop."""
+        await store.write("greeting", "hello")
+        tool = MemoryReadTool()
+        tool.wire_store(store)
+        output = await tool.execute({"key": "greeting"}, ctx)
+        assert not output.is_error
+        assert "hello" in output.content
+
+    @pytest.mark.asyncio
+    async def test_write_works_with_noop_backend(self, store, ctx):
+        """MemoryWriteTool works correctly even when observability is noop."""
+        tool = MemoryWriteTool()
+        tool.wire_store(store)
+        output = await tool.execute({"key": "tracing_test", "value": "v"}, ctx)
+        assert not output.is_error
+        stored = await store.read("tracing_test")
+        assert stored == "v"
+
+    @pytest.mark.asyncio
+    async def test_delete_works_with_noop_backend(self, store, ctx):
+        """MemoryDeleteTool works correctly even when observability is noop."""
+        await store.write("tmp", "data")
+        tool = MemoryDeleteTool()
+        tool.wire_store(store)
+        output = await tool.execute({"key": "tmp"}, ctx)
+        assert not output.is_error
+        assert await store.read("tmp") is None

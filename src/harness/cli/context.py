@@ -67,6 +67,10 @@ class AppContext:
         # 1. Load config
         config = Config.load(config_path)
 
+        # 1.5 Initialize observability backend (before anything that might emit traces)
+        from harness.observability import init_backend as _init_obs
+        _init_obs(config.observability)
+
         # 2. Apply CLI overrides
         if provider_override:
             config.llm.provider = provider_override

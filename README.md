@@ -191,6 +191,49 @@ Two-tier strategy to prevent token overflow:
 ### Task Logging
 Each session writes a structured JSONL log to `logs/<session_id>.jsonl`. Events: `task_start`, `context`, `llm_call`, `tool_call`, `memory_op`, `task_end`. Sensitive params (api_key, password, token) are redacted.
 
+### Observability (Langfuse Tracing)
+Optional integration with [Langfuse](https://langfuse.com) for real-time trace visualization:
+
+```toml
+# harness.local.toml
+[observability]
+backend = "langfuse"
+langfuse_public_key = "pk-..."
+langfuse_secret_key = "sk-..."
+langfuse_host = "http://localhost:3000"
+```
+
+Each agent session creates a **Trace**. Tool calls and LLM calls are recorded as nested **Observations** (spans/generations). All events are viewable in the Langfuse dashboard. Falls back to zero-overhead no-op when langfuse is not installed or `backend = "none"`.
+
+Install with: `uv pip install -e ".[observability]"`
+
+### Memory Evaluation (Ragas + Langfuse)
+Evaluate memory quality across three dimensions using [Ragas](https://docs.ragas.io) metrics:
+
+| Dimension | Metrics | What it measures |
+|-----------|---------|-----------------|
+| Retrieval | `context_precision`, `context_recall` | Does `memory_read` find the right facts? |
+| Storage | `faithfulness` | Is `memory_write` faithful to the source? |
+| Impact | `answer_correctness`, `answer_relevancy` | Does memory improve agent responses? |
+
+Each evaluation run creates a dedicated Langfuse trace with scores per metric. Results are traceable end-to-end: **trace → observation → score → dashboard**.
+
+```bash
+# Install with eval dependencies
+uv pip install -e ".[eval]"
+
+# Configure eval LLM in harness.local.toml
+# [observability]
+# eval_llm_api_key = "sk-..."
+
+# Run evaluation
+harness eval memory                          # all dimensions
+harness eval memory --dimension retrieval    # retrieval only
+harness eval memory --session abc123         # specific session
+harness eval memory --output report.json     # JSON output
+harness eval list-metrics                    # list available metrics
+```
+
 ### Commands
 | Command | Description |
 |---------|-------------|
@@ -199,6 +242,8 @@ Each session writes a structured JSONL log to `logs/<session_id>.jsonl`. Events:
 | `harness repl` | Explicit REPL |
 | `harness tui` | Full-screen Textual TUI |
 | `harness doctor` | System health check |
+| `harness eval memory` | Evaluate memory quality (ragas + langfuse) |
+| `harness eval list-metrics` | List available evaluation metrics |
 
 Global flags: `-c/--config PATH`, `-d/--debug`. Run flags: `-p/--provider`, `-m/--model`, `-n/--max-turns`, `-r/--repomap`, `-w/--workspace`.
 
@@ -218,6 +263,9 @@ Global flags: `-c/--config PATH`, `-d/--debug`. Run flags: `-p/--provider`, `-m/
 - **LangGraph multi-agent**: Pair coding (coder + reviewer + human-in-the-loop) and multi-agent collaboration (controller + implementers + two-stage review). Autonomous complexity assessment with tiered model routing.
 - **Sub-agent topologies**: Sequential chain, parallel fan-out, tree nesting, and DAG-based dependency scheduling — flexible orchestration patterns.
 - **Two-stage review pipeline**: Spec compliance (functional correctness) then code quality (structure/style) — always uses strongest model for review.
+- **Langfuse tracing**: Session-level traces with nested spans for tool calls and LLM generations. Graceful fallback when langfuse not installed.
+- **Ragas memory evaluation**: Assess memory retrieval, storage, and impact quality with ragas metrics. End-to-end traceability from evaluation run to langfuse dashboard.
+- **Optional dependency groups**: Core deps are lean — observability (`[observability]`) and evaluation (`[eval]`) are opt-in extras.
 
 ---
 
@@ -229,15 +277,17 @@ python/
 │   ├── cli/           # CLI entry, REPL, TUI, commands
 │   ├── config/        # Pydantic config models
 │   ├── core/          # Agent loop, compaction, context, session, subagent
+│   ├── eval/          # Ragas memory evaluation (metrics, runner, reporter)
 │   ├── langgraph/     # LangGraph multi-agent graphs, nodes, delegate
 │   │   └── nodes/     # Pair coding + multi-agent collaboration nodes
 │   ├── llm/           # LLM client ABC + LiteLLM provider
-│   ├── tools/         # Tool ABC, executor, permissions, 12 built-ins
-│   │   └── sandbox/   # Docker + NoOp runtimes
+│   ├── logging/       # Structured JSONL task logger
 │   ├── memory/        # SQLite MemoryStore
+│   ├── observability/ # Langfuse tracing backend (ABC + NoOp + Langfuse)
 │   ├── repomap/       # tree-sitter tag extraction + PageRank ranking
 │   ├── safety/        # Output scanning + leak detection
-│   └── logging/       # Structured JSONL task logger
+│   └── tools/         # Tool ABC, executor, permissions, 12 built-ins
+│       └── sandbox/   # Docker + NoOp runtimes
 ├── tests/             # pytest test suite
 ├── harness.toml        # Shared config (committed)
 ├── harness.local.toml  # Secrets (git-ignored)

@@ -63,6 +63,17 @@ class ObservabilityConfig(BaseModel):
 
     backend: Literal["harness", "langfuse", "none"] = "none"
 
+    # Langfuse connection (used when backend == "langfuse")
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = ""
+
+    # Evaluation LLM (separate from agent LLM — use cost-effective model)
+    eval_llm_provider: str = "openai"
+    eval_llm_model: str = "gpt-4o-mini"
+    eval_llm_api_key: str = ""
+    eval_llm_api_base: str = ""
+
 
 class Config(BaseModel):
     """Root configuration — loaded from harness.toml."""

@@ -70,17 +70,42 @@ class ToolExecutor:
         if outcome == PermissionOutcome.DENY:
             raise NotAuthorizedError(f"Tool '{tool_name}' denied: {outcome}", tool_name=tool_name)
 
-        # Step 4: Execute
+        # Step 4: Execute (with tracing span)
+        from harness.observability import get_backend, NoopBackend
+
+        backend = get_backend()
+        span = None
+        if not isinstance(backend, NoopBackend):
+            tool_sensitive = getattr(tool, "sensitive_params", set())
+            safe_input = {k: v for k, v in params.items() if k not in tool_sensitive}
+            span = backend.create_trace(name=f"tool.{tool_name}").span(
+                name=f"tool.{tool_name}",
+                input={"params": _truncate_for_log(str(safe_input), 500)},
+                metadata={"tool_domain": str(tool.domain) if hasattr(tool, 'domain') else ""},
+            )
+
         start = time.monotonic()
         try:
             output = await tool.execute(params, ctx)
         except Exception as e:
+            if span:
+                span.end(output={"error": str(e)}, metadata={"status": "error"})
             if isinstance(e, ToolError):
                 raise
             raise ToolError(str(e), tool_name=tool_name) from e
 
         duration_ms = (time.monotonic() - start) * 1000
         output.duration_ms = duration_ms
+
+        if span:
+            span.end(
+                output={"result_summary": _truncate_for_log(output.content)},
+                metadata={
+                    "duration_ms": duration_ms,
+                    "is_error": output.is_error,
+                    "exit_code": getattr(output, "exit_code", 0),
+                },
+            )
 
         # Step 5: Safety scan
         if self.safety and output.content:

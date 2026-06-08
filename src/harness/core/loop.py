@@ -156,6 +156,26 @@ class ChatDelegate(LoopDelegate):
         tools = ctx.tool_registry.get_schemas() if ctx.tool_registry and not ctx.force_text else None
         last_error: Exception | None = None
 
+        from harness.observability import get_backend, NoopBackend
+
+        _obs_backend = get_backend()
+        _gen = None
+        if not isinstance(_obs_backend, NoopBackend):
+            model = getattr(self._llm, "model", "")
+            _gen = _obs_backend.create_trace(name="llm_call").generation(
+                name="llm_call",
+                model=model,
+                input={
+                    "messages_count": len(ctx.messages),
+                    "has_tools": tools is not None and len(tools) > 0 if tools else False,
+                    "iteration": iteration,
+                },
+                model_parameters={
+                    "temperature": getattr(self._llm, "temperature", 0.0),
+                    "max_tokens": getattr(self._llm, "max_tokens", 0),
+                },
+            )
+
         for attempt in range(_MAX_RETRIES):
             llm_start = time.monotonic()
             try:
@@ -165,8 +185,19 @@ class ChatDelegate(LoopDelegate):
                     system_prompt=ctx.system_prompt,
                 )
                 duration_ms = (time.monotonic() - llm_start) * 1000
+                usage = response.usage
+                if _gen is not None and usage:
+                    _gen.end(
+                        output={"response_type": "tool_calls" if response.tool_calls else "text"},
+                        usage={
+                            "input": usage.input_tokens,
+                            "output": usage.output_tokens,
+                            "total": usage.input_tokens + usage.output_tokens,
+                        },
+                    )
+                elif _gen is not None:
+                    _gen.end(output={"response_type": "tool_calls" if response.tool_calls else "text"})
                 if self._task_logger:
-                    usage = response.usage
                     self._task_logger.log_llm_call(
                         model=getattr(self._llm, "model", ""),
                         provider=getattr(self._llm, "provider", ""),
@@ -196,6 +227,8 @@ class ChatDelegate(LoopDelegate):
                     )
 
                 if not is_transient or attempt >= _MAX_RETRIES - 1:
+                    if _gen is not None:
+                        _gen.end(output={"error": str(exc)}, model="")
                     raise
 
                 last_error = exc
@@ -222,6 +255,8 @@ class ChatDelegate(LoopDelegate):
                 await asyncio.sleep(backoff)
 
         # Should not reach here, but just in case
+        if _gen is not None:
+            _gen.end(output={"error": "all retries exhausted"}, model="")
         if last_error:
             raise last_error
         raise RuntimeError("LLM call failed after retries")
@@ -409,6 +444,30 @@ class AgenticLoop:
         if hasattr(self.delegate, '_on_event'):
             self.delegate._on_event = on_event
 
+        # Create session-level langfuse trace
+        from harness.observability import get_backend, NoopBackend
+
+        _obs_backend = get_backend()
+        _trace = None
+        if not isinstance(_obs_backend, NoopBackend):
+            session_id = getattr(self.delegate, '_session_id', '')
+            first_msg = self.ctx.messages[0].content if self.ctx.messages else ""
+            engine = getattr(self.config, 'engine', 'native')
+            _trace = _obs_backend.create_trace(
+                name="agent_session",
+                session_id=session_id,
+                input={"user_prompt": first_msg[:500] if first_msg else ""},
+                tags=["agent_loop", str(engine)],
+            )
+
+        def _end_trace(outcome: LoopOutcome) -> None:
+            if _trace is not None:
+                _trace.end(output={
+                    "outcome": outcome.kind,
+                    "turns": outcome.turns,
+                    "duration_ms": outcome.duration_ms,
+                })
+
         for iteration in range(1, self.config.max_turns + 1):
             # 1. Check signals
             signal = await self.delegate.check_signals()
@@ -423,6 +482,7 @@ class AgenticLoop:
                         signal_granularity=SignalGranularity.G0,
                         attribution=AttributionDimension.STRUCTURAL,
                     ))
+                _end_trace(outcome)
                 return outcome
 
             # 2. Pre-LLM hook
@@ -434,6 +494,7 @@ class AgenticLoop:
                         signal_granularity=SignalGranularity.G0,
                         attribution=AttributionDimension.STRUCTURAL,
                     ))
+                _end_trace(early)
                 return early
 
             # 3. Call LLM — G1: process-level textual signal
@@ -457,6 +518,7 @@ class AgenticLoop:
                         signal_granularity=SignalGranularity.G0,
                         attribution=AttributionDimension.STRUCTURAL,
                     ))
+                _end_trace(outcome)
                 return outcome
 
             # 4. Parse response
@@ -472,6 +534,7 @@ class AgenticLoop:
                             signal_granularity=SignalGranularity.G0,
                             attribution=AttributionDimension.STRUCTURAL,
                         ))
+                    _end_trace(outcome)
                     return outcome
             else:
                 final_text = response.text or ""
@@ -490,6 +553,7 @@ class AgenticLoop:
                             signal_granularity=SignalGranularity.G0,
                             attribution=AttributionDimension.PROMPT,
                         ))
+                    _end_trace(outcome)
                     return outcome
 
             # 5. Post-iteration
@@ -509,4 +573,5 @@ class AgenticLoop:
                 signal_granularity=SignalGranularity.G0,
                 attribution=AttributionDimension.STRUCTURAL,
             ))
+        _end_trace(outcome)
         return outcome
