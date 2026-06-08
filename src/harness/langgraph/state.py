@@ -77,7 +77,7 @@ class TaskItem(TypedDict):
     description: str
     dependencies: list[str]            # IDs of tasks that must complete first
     status: Literal["PENDING", "IN_PROGRESS", "DONE", "DONE_WITH_CONCERNS",
-                    "NEEDS_CONTEXT", "BLOCKED"]
+                    "NEEDS_CONTEXT", "BLOCKED", "SCHEMA_ERROR"]
     assigned_to: str                   # Implementer agent ID
     result: Optional[str]              # Implementation output
     complexity: Literal["simple", "integration", "architecture"]

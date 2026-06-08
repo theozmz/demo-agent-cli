@@ -62,7 +62,7 @@ def handle_run(
     from harness.langgraph.gate import create_complexity_gate, ComplexityGate
 
     session_id = str(uuid.uuid4())
-    task_logger = TaskLogger(session_id=session_id)
+    task_logger = TaskLogger(session_id=session_id, session_name=prompt_text[:60])
 
     # Resolve workspace root
     workspace_root = _resolve_workspace(workspace, ctx)

@@ -168,6 +168,9 @@ def make_controller_node(llm: "LlmClient") -> Callable:
 # ---------------------------------------------------------------------------
 
 
+_TERMINAL_TASK_STATUSES = frozenset({"DONE", "DONE_WITH_CONCERNS", "SCHEMA_ERROR"})
+
+
 def make_task_router_node() -> Callable:
     """Create a task router node (pure logic, no LLM call).
 
@@ -193,7 +196,7 @@ def make_task_router_node() -> Callable:
         if not ready:
             # Check if all tasks are done
             all_done = all(
-                t.get("status") in ("DONE", "DONE_WITH_CONCERNS")
+                t.get("status") in _TERMINAL_TASK_STATUSES
                 for t in task_list
             )
             if all_done:
@@ -205,7 +208,7 @@ def make_task_router_node() -> Callable:
                     "review_stage": "spec",
                 }
             # Some tasks are BLOCKED — can't proceed
-            remaining = len([t for t in task_list if t.get("status") not in ("DONE", "DONE_WITH_CONCERNS")])
+            remaining = len([t for t in task_list if t.get("status") not in _TERMINAL_TASK_STATUSES])
             logger.warning("Task router: no ready tasks, but %d remain blocked", remaining)
             return {
                 "errors": [f"Task DAG blocked: {remaining} tasks cannot proceed due to unmet dependencies or blocked status"],
@@ -373,7 +376,7 @@ def make_implementer_node(
                 task["assigned_to"] = f"implementer-{task_id}"
                 task_list[idx] = task
 
-                if status in ("DONE", "DONE_WITH_CONCERNS"):
+                if status in _TERMINAL_TASK_STATUSES:
                     if task_id not in all_completed:
                         all_completed.append(task_id)
                 all_results[task_id] = result_text
@@ -422,7 +425,7 @@ def make_implementer_node(
 
         # Track completion
         all_completed = list(state.get("completed_tasks", []))
-        if status in ("DONE", "DONE_WITH_CONCERNS"):
+        if status in _TERMINAL_TASK_STATUSES:
             if task_id not in all_completed:
                 all_completed.append(task_id)
 
@@ -444,6 +447,9 @@ def make_implementer_node(
 
 def _parse_implementer_status(text: str) -> str:
     """Parse implementer report protocol from sub-agent output."""
+    # Detect schema validation failures — these are terminal, not retryable
+    if "[FATAL]" in text:
+        return "SCHEMA_ERROR"
     match = re.search(r"STATUS:\s*(DONE_WITH_CONCERNS|NEEDS_CONTEXT|BLOCKED|DONE)", text)
     if match:
         return match.group(1)

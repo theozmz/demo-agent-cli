@@ -10,7 +10,12 @@ from harness.tools.tool import Tool, ToolContext, ToolOutput, ApprovalRequiremen
 
 class FileReadTool(Tool):
     name = "file_read"
-    description = "Read a file from the local filesystem. Supports line offset and limit."
+    description = (
+        "Read a file from the local filesystem. "
+        "Params: file_path (required) — absolute path to the file. "
+        "offset (optional) — starting line number, 0-indexed. "
+        "limit (optional) — max lines to read, default 2000."
+    )
 
     @property
     def input_schema(self) -> dict:

@@ -1,0 +1,161 @@
+/*
+ * Harness TUI — Claude Code visual style.
+ * Dark theme with claude-orange accents, semantic state colors,
+ * and low-contrast ambient backgrounds.
+ *
+ * Textual TCSS does not support CSS custom properties, so all color
+ * values are specified directly on each rule.
+ *
+ * Palette reference:
+ *   claude orange:  rgb(215, 119, 87)
+ *   success green:  rgb(78, 186, 101)
+ *   error red:      rgb(255, 107, 128)
+ *   warning amber:  rgb(255, 193, 7)
+ *   inactive text:  rgb(153, 153, 153)
+ *   user msg bg:    rgb(55, 55, 55)
+ *   tool card bg:   rgb(35, 35, 40)
+ *   main bg:        rgb(14, 14, 14)
+ *   ambient bg:     rgb(18, 18, 18)
+ */
+
+/* === App-level === */
+Screen {
+    background: rgb(14, 14, 14);
+    color: rgb(255, 255, 255);
+}
+
+/* === Header — minimal, Claude shows no header bar === */
+Header {
+    background: rgb(18, 18, 18);
+    color: rgb(153, 153, 153);
+    height: 0;
+}
+
+/* === Footer — keyboard hints === */
+Footer {
+    background: rgb(18, 18, 18);
+    color: rgb(153, 153, 153);
+}
+
+/* === ChatLog — scrollable message area === */
+ChatLog {
+    height: 1fr;
+    padding: 0 1;
+    overflow-y: auto;
+    background: rgb(14, 14, 14);
+}
+
+/* === User message — dark background block with claude-orange left accent === */
+.user-message {
+    background: rgb(55, 55, 55);
+    border-left: solid rgb(215, 119, 87);
+    padding: 1 2;
+    margin: 1 0;
+    color: rgb(255, 255, 255);
+}
+
+/* === Assistant message — plain white text, no background === */
+.assistant-message {
+    color: rgb(255, 255, 255);
+    padding: 0 1;
+    margin: 1 0;
+}
+
+/* === Assistant Markdown content === */
+.assistant-markdown {
+    padding: 0 1;
+    margin: 1 0;
+}
+
+/* === System / info messages — dimmed === */
+.system-message {
+    color: rgb(153, 153, 153);
+    padding: 0 1;
+    margin: 0;
+}
+
+/* === Thinking indicator — italic dim === */
+.thinking-indicator {
+    color: rgb(153, 153, 153);
+    padding: 0 1;
+    height: 1;
+    text-style: italic;
+}
+
+/* === Tool call cards — state-driven left border === */
+.tool-call-pending {
+    border-left: solid rgb(215, 119, 87);
+    margin: 0 0 0 2;
+    padding: 0 1 0 2;
+    background: rgb(35, 35, 40);
+}
+
+.tool-call-success {
+    border-left: solid rgb(78, 186, 101);
+    margin: 0 0 0 2;
+    padding: 0 1 0 2;
+    background: rgb(35, 35, 40);
+}
+
+.tool-call-error {
+    border-left: solid rgb(255, 107, 128);
+    margin: 0 0 0 2;
+    padding: 0 1 0 2;
+    background: rgb(35, 35, 40);
+}
+
+/* === Tool result text === */
+.tool-result {
+    color: rgb(153, 153, 153);
+    padding: 0 0 0 1;
+    margin: 0;
+}
+
+.tool-result-error {
+    color: rgb(255, 107, 128);
+    padding: 0 0 0 1;
+    margin: 0;
+}
+
+/* === Divider — Unicode box-drawing line === */
+.divider {
+    color: rgb(153, 153, 153);
+    height: 1;
+    margin: 0;
+}
+
+/* === Timestamp between message groups === */
+.timestamp {
+    color: rgb(153, 153, 153);
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+
+/* === Compaction / compact summary notice === */
+.compact-summary {
+    color: rgb(153, 153, 153);
+    padding: 0 1;
+    border: dashed rgb(153, 153, 153);
+    margin: 1 0;
+}
+
+/* === StatusBar — docked bottom, subtle === */
+StatusBar {
+    dock: bottom;
+    height: 1;
+    background: rgb(14, 14, 14);
+    color: rgb(153, 153, 153);
+}
+
+/* === Input area === */
+#prompt-input {
+    dock: bottom;
+    height: auto;
+    max-height: 6;
+    margin: 0 1;
+    border: solid rgb(153, 153, 153);
+}
+
+#prompt-input:focus {
+    border: solid rgb(215, 119, 87);
+}

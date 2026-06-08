@@ -10,7 +10,11 @@ from harness.tools.tool import Tool, ToolContext, ToolOutput, ApprovalRequiremen
 
 class GlobSearchTool(Tool):
     name = "glob_search"
-    description = "Fast file pattern matching. Supports glob patterns like '**/*.py' or 'src/**/*.ts'."
+    description = (
+        "Fast file pattern matching. "
+        "Params: pattern (required) — glob pattern like '**/*.py' or 'src/**/*.ts'. "
+        "path (optional) — search root directory, default CWD."
+    )
 
     @property
     def input_schema(self) -> dict:

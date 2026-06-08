@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         title="commands",
         help="Available commands",
     )
-    # Subcommands are optional — default to REPL when none given
+    # Subcommands are optional — default to TUI when none given
 
     shared = _shared_flags()
     add_run_subparser(subparsers, shared)
@@ -142,18 +142,20 @@ def main() -> None:
         debug=args.debug,
     )
 
-    # ---- Interactive banner ----
-    is_interactive = args.command in (None, "repl", "tui")
-    if is_interactive and sys.stdout.isatty():
-        _show_banner(ctx)
-
     # ---- Dispatch ----
     dispatch_func = getattr(args, "func", None)
     if dispatch_func is None:
-        # No subcommand — default to REPL
-        from harness.cli.commands.repl import handle_repl
-
-        handle_repl(ctx=ctx, debug=args.debug)
+        if sys.stdout.isatty():
+            from harness.cli.tui.app import run_tui
+            run_tui(ctx)
+        else:
+            # Non-TTY: read from stdin, run once, write to stdout
+            text = sys.stdin.read().strip()
+            if text:
+                from harness.cli.commands.run import handle_run
+                handle_run(ctx=ctx, prompt_text=text, max_turns=ctx.config.loop.max_turns, debug=args.debug)
+            else:
+                console.print("[red]No input provided (non-TTY).[/red]")
     else:
         dispatch_func(args, ctx)
 

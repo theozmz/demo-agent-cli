@@ -12,9 +12,11 @@ from harness.tools.tool import Tool, ToolContext, ToolOutput, ApprovalRequiremen
 class GrepSearchTool(Tool):
     name = "grep_search"
     description = (
-        "Content search using ripgrep. Full regex syntax, "
-        r"e.g. 'function\s+\w+'. Filters by glob pattern and file type. "
-        "Prefer this over terminal grep/rg."
+        "Content search using ripgrep with full regex syntax. "
+        "Params: pattern (required) — regex to search for, e.g. 'function\\\\s+\\\\w+'. "
+        "path (optional) — search root directory. "
+        "glob (optional) — file filter like '*.py'. "
+        "type (optional) — file type filter like 'py' or 'rust'."
     )
 
     @property

@@ -11,8 +11,9 @@ class MemoryWriteTool(Tool):
     name = "memory_write"
     description = (
         "Write a memory fact to persistent storage. "
-        "Creates or updates a key-value pair that persists across sessions. "
-        "Use for saving user preferences, project notes, or important decisions."
+        "Params: key (required) — the memory key. "
+        "value (required) — the text content to store. "
+        "Creates or updates a key-value pair that persists across sessions."
     )
 
     def __init__(self):

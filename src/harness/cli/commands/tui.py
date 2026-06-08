@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-
 from harness.cli.context import AppContext
 from harness.cli.tui.app import run_tui
-
-logger = logging.getLogger(__name__)
 
 
 def add_tui_subparser(subparsers, shared_parent) -> None:

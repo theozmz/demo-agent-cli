@@ -11,8 +11,8 @@ class MemoryReadTool(Tool):
     name = "memory_read"
     description = (
         "Read a memory fact from persistent storage. "
-        "Memories are key-value pairs persisted across sessions. "
-        "Use this to recall user preferences, project context, or decisions."
+        "Params: key (required) — the memory key to look up. "
+        "Memories are key-value pairs persisted across sessions."
     )
 
     def __init__(self):

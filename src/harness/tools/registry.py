@@ -9,6 +9,29 @@ from typing import Literal
 from harness.tools.tool import Tool
 
 
+def _annotate_input_schema(input_schema: dict) -> dict:
+    """Add [REQUIRED] prefix to each required property's description.
+
+    This gives the LLM a direct textual signal about which parameters are
+    required, independent of the JSON Schema ``required`` array. Critical
+    for API compatibility layers that may not fully convey schema constraints.
+    """
+    required = input_schema.get("required", [])
+    properties = input_schema.get("properties", {})
+    if not required or not properties:
+        return input_schema
+
+    annotated_props = {}
+    for name, prop in properties.items():
+        prop = dict(prop)
+        desc = prop.get("description", "")
+        if name in required and not desc.startswith("[REQUIRED]"):
+            prop["description"] = f"[REQUIRED] {desc}"
+        annotated_props[name] = prop
+
+    return {**input_schema, "properties": annotated_props}
+
+
 class ToolRegistry:
     """
     Central registry for all tools.
@@ -79,14 +102,25 @@ class ToolRegistry:
         return [t for t in tools if not enabled_only or t.is_enabled()]
 
     def get_schemas(self) -> list[dict]:
-        """Return API-ready tool schemas, session-cached for prompt-cache stability."""
+        """Return API-ready tool schemas in Anthropic-native format.
+
+        Anthropic uses ``input_schema`` as the key (not ``parameters``).
+        LiteLLM handles translation to other providers automatically.
+
+        Required properties are annotated with a ``[REQUIRED]`` prefix in
+        their description so the LLM receives a redundant textual signal —
+        critical for API compatibility layers that may strip JSON Schema
+        constraints.
+        """
         schemas = []
         for tool in self.all_tools():
             if tool.name not in self._schema_cache:
+                raw_schema = tool.input_schema
+                annotated = _annotate_input_schema(raw_schema)
                 self._schema_cache[tool.name] = {
                     "name": tool.name,
                     "description": tool.description,
-                    "input_schema": tool.input_schema,
+                    "input_schema": annotated,
                 }
             schemas.append(self._schema_cache[tool.name])
         return schemas

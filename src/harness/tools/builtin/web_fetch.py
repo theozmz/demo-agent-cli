@@ -30,7 +30,9 @@ class WebFetchTool(Tool):
     name = "web_fetch"
     description = (
         "Fetch a URL and return its content as markdown. "
-        "Fails on authenticated/private URLs. HTTP is upgraded to HTTPS."
+        "Params: url (required) — the URL to fetch. "
+        "prompt (optional) — question to answer from the page content. "
+        "Fails on authenticated/private URLs."
     )
 
     @property

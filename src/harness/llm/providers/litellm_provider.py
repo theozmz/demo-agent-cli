@@ -15,6 +15,24 @@ from harness.llm.types import ChatMessage, LlmResponse, LlmUsage, ToolCall
 logger = logging.getLogger(__name__)
 
 
+def _parse_tool_args(arguments: Any) -> dict[str, Any]:
+    """Parse tool call arguments from litellm-normalized format.
+
+    Litellm may return arguments as either a JSON string or an already-parsed
+    dict, depending on provider and version. Handle both forms defensively.
+    """
+    if arguments is None:
+        return {}
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        try:
+            return json.loads(arguments)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 class LiteLlmProvider(LlmClient):
     """
     Multi-provider LLM client via litellm.
@@ -35,9 +53,11 @@ class LiteLlmProvider(LlmClient):
         api_key: str = "",
         api_base: str = "",
         provider: str = "",
+        max_tokens: int = 8192,
     ):
         self.api_key = api_key
         self.api_base = api_base
+        self.max_tokens = max_tokens
         # Build the litellm model identifier.  When the model name
         # does not already carry a provider prefix (e.g. "deepseek/"
         # or "groq/") we prepend the configured provider so litellm
@@ -52,7 +72,7 @@ class LiteLlmProvider(LlmClient):
         messages: list[ChatMessage],
         tools: list[dict] | None = None,
         system_prompt: str | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         temperature: float = 0.0,
         **kwargs,
     ) -> LlmResponse:
@@ -61,7 +81,7 @@ class LiteLlmProvider(LlmClient):
         request_kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=litellm_messages,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
             temperature=temperature,
         )
         if tools:
@@ -174,10 +194,7 @@ class LiteLlmProvider(LlmClient):
         tool_calls: list[ToolCall] = []
         if msg.tool_calls:
             for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                except json.JSONDecodeError:
-                    args = {}
+                args = _parse_tool_args(tc.function.arguments)
                 tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, input=args))
 
         usage = LlmUsage(

@@ -9,7 +9,10 @@ from harness.tools.tool import Tool, ToolContext, ToolOutput, ApprovalRequiremen
 
 class MemoryDeleteTool(Tool):
     name = "memory_delete"
-    description = "Delete a memory fact by key. The key must exist."
+    description = (
+        "Delete a memory fact from persistent storage. "
+        "Params: key (required) — the memory key to delete."
+    )
 
     def __init__(self):
         self._store = None  # type: ignore

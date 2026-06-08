@@ -1,6 +1,6 @@
 """TaskLogger — structured JSONL logger for task execution traces.
 
-Each **session** gets its own file: ``logs/<session_id>.jsonl``.
+Each **session** gets its own file: ``logs/<YYYY-MM-DD-HHMMSS>-<name>.jsonl``.
 All interactions within a session append to that file.
 
 Implements the credit-assignment event schema from Li et al. (2026):
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,23 +42,46 @@ def _truncate(text: str, max_len: int = 500) -> str:
     return text[:max_len] + f"...<truncated {len(text) - max_len} chars>"
 
 
+def _safe_filename(name: str, max_len: int = 50) -> str:
+    """Sanitize a string for use as a filename segment."""
+    safe = re.sub(r'[^\w\-]', '_', name).strip('_') or "session"
+    return safe[:max_len]
+
+
 class TaskLogger:
     """Structured JSONL logger — one file per session.
 
+    File naming: ``logs/<YYYY-MM-DD-HHMMSS>-<session_name>.jsonl``
+
     Usage::
 
-        task_log = TaskLogger(session_id="abc-123")
-        task_log.log_task_start(user_prompt="...")
-        task_log.log_llm_call(model="gpt-4o", ...)
+        task_log = TaskLogger(session_name="refactor-auth")
+        task_log.log_turn(turn=1, messages_in=3, response="...",
+                          tool_calls=[...], tokens_in=1200, tokens_out=300,
+                          duration_ms=1520.5)
         task_log.log_task_end(outcome="completed", ...)
         task_log.close()
     """
 
-    def __init__(self, session_id: str, log_dir: str | Path = "logs"):
-        self._session_id = session_id
+    def __init__(self, session_id: str = "", session_name: str = "", log_dir: str | Path = "logs"):
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        self._session_id = session_id or timestamp
+        self._session_name = session_name or ""
         self._log_dir = Path(log_dir)
         self._log_dir.mkdir(parents=True, exist_ok=True)
-        self._file_path = self._log_dir / f"{session_id}.jsonl"
+
+        # File naming:
+        # - If session_name is given → YYYYMMDD-HHMMSS-name.jsonl
+        # - If only session_id (legacy) → session_id.jsonl (backward compatible)
+        if session_name:
+            name_part = _safe_filename(session_name)
+            filename = f"{timestamp}-{name_part}.jsonl"
+        elif session_id:
+            filename = f"{session_id}.jsonl"
+        else:
+            filename = f"{timestamp}.jsonl"
+
+        self._file_path = self._log_dir / filename
         self._file: Any = None
         self._open()
 
@@ -108,6 +132,52 @@ class TaskLogger:
             model=model,
             cwd=cwd,
             max_turns=max_turns,
+        )
+
+    def log_turn(
+        self,
+        *,
+        turn: int = 0,
+        event: str = "",
+        messages_in: int = 0,
+        response: str = "",
+        tool_calls: list[dict[str, Any]] | None = None,
+        tool_results: list[dict[str, Any]] | None = None,
+        tokens_input: int = 0,
+        tokens_output: int = 0,
+        duration_ms: float = 0.0,
+        error: str = "",
+    ) -> None:
+        """Log a consolidated turn record — one per agent loop iteration.
+
+        Each turn captures: LLM input message count, LLM response text,
+        tool calls made with params, tool results, token usage, and timing.
+        This is the primary log format for session analysis.
+        """
+        self._emit(
+            event or "turn",
+            turn=turn,
+            messages_in=messages_in,
+            response=_truncate(response, 2000),
+            tool_calls=[
+                {
+                    "name": tc.get("name", ""),
+                    "params": _sanitize_params(tc.get("params", {})),
+                }
+                for tc in (tool_calls or [])
+            ],
+            tool_results=[
+                {
+                    "name": tr.get("name", ""),
+                    "is_error": tr.get("is_error", False),
+                    "summary": _truncate(tr.get("summary", ""), 300),
+                }
+                for tr in (tool_results or [])
+            ],
+            tokens_input=tokens_input,
+            tokens_output=tokens_output,
+            duration_ms=round(duration_ms, 1),
+            error=error,
         )
 
     def log_task_end(

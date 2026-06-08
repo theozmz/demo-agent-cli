@@ -21,7 +21,8 @@ except ImportError:
 class WebSearchTool(Tool):
     name = "web_search"
     description = (
-        "Search the web via DuckDuckGo HTML (no API key required). "
+        "Search the web via DuckDuckGo (no API key required). "
+        "Params: query (required) — the search query string. "
         "Returns result blocks with titles, snippets, and URLs."
     )
 

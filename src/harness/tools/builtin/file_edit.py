@@ -12,8 +12,10 @@ class FileEditTool(Tool):
     name = "file_edit"
     description = (
         "Performs exact string replacement in a file. "
-        "old_string must match exactly (including whitespace) and be unique. "
-        "Set replace_all=true to replace every occurrence. "
+        "Params: file_path (required) — absolute path to the file. "
+        "old_string (required) — exact text to replace, must be unique. "
+        "new_string (required) — replacement text. "
+        "replace_all (optional) — replace every occurrence, default false. "
         "Always read the file first to get exact content."
     )
 

@@ -91,6 +91,7 @@ class AppContext:
             api_key=config.llm.api_key,
             api_base=config.llm.api_base,
             provider=config.llm.provider,
+            max_tokens=config.llm.max_tokens,
         )
 
         # 5. Build tool infrastructure

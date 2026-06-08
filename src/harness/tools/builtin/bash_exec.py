@@ -14,9 +14,10 @@ class BashExecTool(Tool):
     name = "bash_exec"
     description = (
         "Execute a shell command in a sandboxed environment. "
-        "Use for running tests, installing packages, git operations, "
-        "build commands, and any code execution. "
-        "Commands run with a 120s timeout and are isolated from the host."
+        "Params: command (required) — the shell command to execute. "
+        "timeout (optional) — timeout in seconds, range 5-300, default 120. "
+        "cwd (optional) — working directory, default /workspace. "
+        "Use for running tests, installing packages, git operations, build commands."
     )
     domain = ToolDomain.CONTAINER
 

@@ -10,7 +10,11 @@ from harness.tools.tool import Tool, ToolContext, ToolOutput, ApprovalRequiremen
 
 class FileWriteTool(Tool):
     name = "file_write"
-    description = "Write or overwrite a file. Creates parent directories automatically."
+    description = (
+        "Write or overwrite a file. Creates parent directories automatically. "
+        "Params: file_path (required) — absolute path to the file to write. "
+        "content (required) — the text content to write."
+    )
 
     @property
     def input_schema(self) -> dict:

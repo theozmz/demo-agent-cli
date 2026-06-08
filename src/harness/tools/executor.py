@@ -26,6 +26,34 @@ def _truncate_for_log(text: str, max_len: int = 300) -> str:
     return text[:max_len] + f"...<truncated {len(text) - max_len} chars>"
 
 
+def _extract_validation_detail(
+    error: "jsonschema.ValidationError", tool: Tool, params: dict[str, Any]
+) -> str:
+    """Extract a human-readable detail from a jsonschema ValidationError."""
+    validator = error.validator
+
+    if validator == "required":
+        missing = error.validator_value
+        if missing:
+            return (
+                f"Missing required parameter(s): {', '.join(repr(m) for m in missing)}. "
+                f"Received: {sorted(params.keys())}"
+            )
+        return error.message
+
+    if validator == "type":
+        return (
+            f"{list(error.path) or '(root)'}: {error.message}. "
+            f"Schema expects: {error.validator_value}"
+        )
+
+    if validator == "additionalProperties":
+        extra = list(error.validator_value) if error.validator_value else []
+        return f"Unexpected parameter(s): {extra}. Allowed: {sorted(tool.input_schema.get('properties', {}).keys())}"
+
+    return error.message
+
+
 class ToolExecutor:
     """
     Tool execution pipeline — all tool calls go through this path.
@@ -135,7 +163,24 @@ class ToolExecutor:
     def _validate_params(self, tool: Tool, params: dict[str, Any]):
         """Validate params against the tool's JSON Schema."""
         import jsonschema
+
+        # Fast pre-check: required fields present
+        required = tool.input_schema.get("required", [])
+        if required:
+            missing = [f for f in required if f not in params]
+            if missing:
+                raise InvalidParametersError(
+                    f"Missing required parameter(s): {', '.join(repr(m) for m in missing)}. "
+                    f"Required: {required}",
+                    tool_name=tool.name,
+                )
+
         try:
             jsonschema.validate(params, tool.input_schema)
         except jsonschema.ValidationError as e:
-            raise InvalidParametersError(str(e), tool_name=tool.name) from e
+            detail = _extract_validation_detail(e, tool, params)
+            raise InvalidParametersError(detail, tool_name=tool.name) from e
+        except jsonschema.SchemaError as e:
+            raise InvalidParametersError(
+                f"Tool schema for '{tool.name}' is invalid: {e}", tool_name=tool.name
+            ) from e

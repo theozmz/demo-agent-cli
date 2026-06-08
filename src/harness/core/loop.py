@@ -117,6 +117,30 @@ class LoopEvent:
 # ---------------------------------------------------------------------------
 # ChatDelegate
 # ---------------------------------------------------------------------------
+def _format_schema_error(tool_name: str, params: dict, raw_error: str, count: int) -> str:
+    """Format a jsonschema validation error into a clean, helpful message.
+
+    Schema validation failures are deterministic — retrying the same call
+    will never succeed. We stop after 2 attempts (1 retry).
+    """
+    msg = raw_error.strip()
+
+    if count >= 2:
+        return (
+            f"[FATAL] {tool_name} has been called {count} times with invalid parameters. "
+            f"STOP retrying — schema errors are deterministic and will not resolve with retries. "
+            f"Use a different approach or ask the user for clarification.\n"
+            f"Last error: {msg}"
+        )
+
+    return (
+        f"Error calling {tool_name}: {msg}\n\n"
+        f"This is attempt {count}. Schema errors are deterministic — the same call will "
+        f"always fail. Please check the required parameters for {tool_name} "
+        f"and try again with valid input."
+    )
+
+
 class ChatDelegate(LoopDelegate):
     """Standard interactive chat delegate — calls LLM, executes tools, returns text."""
 
@@ -137,6 +161,7 @@ class ChatDelegate(LoopDelegate):
         self._on_event: Callable[[LoopEvent], None] | None = None
         self.token_counter: "TokenCounter | None" = None
         self._status: "SessionStatus | None" = None
+        self._consecutive_schema_errors: dict[str, int] = {}
 
     def wire_progress(
         self,
@@ -312,18 +337,28 @@ class ChatDelegate(LoopDelegate):
             try:
                 output = await self._tools.execute(tc.name, tc.input, tool_ctx)
             except Exception as e:
+                # Format error message — use clean format for schema errors
+                from harness.core.errors import InvalidParametersError
+                if isinstance(e, InvalidParametersError):
+                    key = f"{tc.name}"
+                    self._consecutive_schema_errors[key] = self._consecutive_schema_errors.get(key, 0) + 1
+                    err_count = self._consecutive_schema_errors[key]
+                    error_msg = _format_schema_error(tc.name, tc.input, str(e), err_count)
+                else:
+                    error_msg = f"Error: {e}"
+
                 if self._task_logger:
                     self._task_logger.log_error(
                         source="tool", message=str(e), tool_name=tc.name,
                     )
                 ctx.messages.append(ChatMessage.tool_result(
-                    tool_call_id=tc.id, content=str(e), name=tc.name, is_error=True,
+                    tool_call_id=tc.id, content=error_msg, name=tc.name, is_error=True,
                 ))
                 if self._on_event:
                     self._on_event(LoopEvent(
                         kind="tool_result",
                         tool_name=tc.name,
-                        tool_output=f"Error: {e}",
+                        tool_output=error_msg,
                         tool_error=True,
                         signal_granularity=SignalGranularity.G2,
                         attribution=AttributionDimension.STRUCTURAL,
@@ -358,6 +393,9 @@ class ChatDelegate(LoopDelegate):
                     signal_granularity=gran,
                     attribution=AttributionDimension.STRUCTURAL,
                 ))
+            # Reset schema error counter on success
+            self._consecutive_schema_errors.pop(tc.name, None)
+
             if self._status:
                 marker = "✗" if output.is_error else "←"
                 self._status.current_instruction = f"  {marker} {tc.name}"
@@ -379,6 +417,59 @@ class ChatDelegate(LoopDelegate):
 # ---------------------------------------------------------------------------
 # AgenticLoop
 # ---------------------------------------------------------------------------
+def _maybe_log_turn(
+    delegate,
+    iteration: int,
+    response,
+    messages_before: int,
+    turn_start: float,
+    ctx,
+) -> None:
+    """Log a consolidated turn record if the delegate has a task_logger."""
+    task_logger = getattr(delegate, '_task_logger', None)
+    if task_logger is None or response is None:
+        return
+
+    tool_calls_log: list[dict] = []
+    tool_results_log: list[dict] = []
+    tokens_in = 0
+    tokens_out = 0
+    response_text = ""
+
+    if response.tool_calls:
+        response_text = "[tool_calls]"
+        for tc in response.tool_calls:
+            tool_calls_log.append({"name": tc.name, "params": tc.input or {}})
+    else:
+        response_text = response.text or ""
+
+    if response.usage:
+        tokens_in = response.usage.input_tokens
+        tokens_out = response.usage.output_tokens
+
+    # Extract tool results from messages appended during this turn
+    for msg in ctx.messages[messages_before:]:
+        if msg.tool_call_id and msg.role == "tool":
+            tool_results_log.append({
+                "name": msg.name or "",
+                "is_error": msg.is_error,
+                "summary": msg.content[:300] if msg.content else "",
+            })
+
+    duration_ms = (time.monotonic() - turn_start) * 1000
+
+    task_logger.log_turn(
+        turn=iteration,
+        messages_in=messages_before,
+        response=response_text,
+        tool_calls=tool_calls_log,
+        tool_results=tool_results_log,
+        tokens_input=tokens_in,
+        tokens_output=tokens_out,
+        duration_ms=duration_ms,
+    )
+
+
 class AgenticLoop:
     """Core agentic loop — the main query → LLM → tools → observe cycle.
 
@@ -539,6 +630,10 @@ class AgenticLoop:
                 _end_trace(early)
                 return early
 
+            # Snapshot state before LLM call for turn logging
+            _messages_before = len(self.ctx.messages)
+            _turn_start = time.monotonic()
+
             # 3. Call LLM — G1: process-level textual signal
             if on_event:
                 on_event(LoopEvent(
@@ -577,6 +672,29 @@ class AgenticLoop:
                     content=response.text or "", tool_calls=response.tool_calls,
                 ))
                 outcome = await self.delegate.execute_tool_calls(response.tool_calls, self.ctx)
+
+                # Circuit breaker: stop if any tool has 2+ consecutive schema errors
+                for tool_key, err_count in list(self.delegate._consecutive_schema_errors.items()):
+                    if err_count >= 2:
+                        outcome = LoopOutcome(
+                            kind="error",
+                            content=f"Tool '{tool_key}' failed parameter validation {err_count} consecutive times. "
+                                    f"Schema validation errors are deterministic — the model is unable to correct "
+                                    f"the parameters. Please try a different prompt or approach.",
+                            turns=iteration,
+                        )
+                        if on_event:
+                            on_event(LoopEvent(
+                                kind="done", outcome=outcome,
+                                signal_granularity=SignalGranularity.G0,
+                                attribution=AttributionDimension.STRUCTURAL,
+                            ))
+                        if self._status:
+                            self._status.current_instruction = "idle"
+                            self._status.current_turn = 0
+                        _end_trace(outcome)
+                        return outcome
+
                 if outcome:
                     if on_event:
                         on_event(LoopEvent(
@@ -591,6 +709,8 @@ class AgenticLoop:
                     return outcome
             else:
                 final_text = response.text or ""
+                # Log turn before potentially returning
+                _maybe_log_turn(self.delegate, iteration, response, _messages_before, _turn_start, self.ctx)
                 action = await self.delegate.handle_text_response(final_text, self.ctx)
                 if action == TextAction.RETURN:
                     usage = response.usage
@@ -614,6 +734,9 @@ class AgenticLoop:
 
             # 5. Post-iteration
             await self.delegate.after_iteration(iteration, self.ctx)
+
+            # 5.5 Per-turn consolidated log
+            _maybe_log_turn(self.delegate, iteration, response, _messages_before, _turn_start, self.ctx)
 
             # 6. Compaction check — emits G3 cross-dimensional harness signal
             if self._compaction_needed():
