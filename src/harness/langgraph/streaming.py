@@ -27,6 +27,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _fmt_tok(n: int) -> str:
+    """Format token count: 1234 → '1.2k'."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
 async def stream_graph_events(
     graph: "CompiledStateGraph",
     initial_state: dict,
@@ -131,6 +140,18 @@ def _dispatch_event(
                 tool_output=output[:5000],  # Truncate for display
                 tool_error=is_error,
             ))
+
+        case "on_chat_model_end":
+            output = data.get("output", {})
+            usage_meta = output.get("usage_metadata", {}) if isinstance(output, dict) else {}
+            input_tokens = usage_meta.get("input_tokens", 0)
+            output_tokens = usage_meta.get("output_tokens", 0)
+            if input_tokens or output_tokens:
+                on_event(LoopEvent(
+                    kind="llm_tokens",
+                    tool_name=name,  # node name: "coder", "reviewer", etc.
+                    content=f"📊 {_fmt_tok(input_tokens)} in / {_fmt_tok(output_tokens)} out [{name}]",
+                ))
 
         case "on_chain_end":
             # Only emit for terminal chain

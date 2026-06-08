@@ -85,8 +85,9 @@ class ComplexityGate:
         enabled: bool = True,
         confidence_threshold: float = 0.6,
         use_llm_fallback: bool = False,
+        llm_client: "LlmClient | None" = None,
     ):
-        self._assessor = assessor or ComplexityAssessor()
+        self._assessor = assessor or ComplexityAssessor(llm_client=llm_client)
         self.enabled = enabled
         self.confidence_threshold = confidence_threshold
         self.use_llm_fallback = use_llm_fallback
@@ -234,11 +235,18 @@ class ComplexityGate:
 # Factory
 # ---------------------------------------------------------------------------
 
-def create_complexity_gate(config: "Config | None" = None) -> ComplexityGate:
+def create_complexity_gate(
+    config: "Config | None" = None,
+    llm_client: "LlmClient | None" = None,
+) -> ComplexityGate:
     """Create a ComplexityGate from config.
 
     Reads [loop] auto_mode and auto_mode_threshold from config.
     Falls back to sensible defaults when config is unavailable.
+
+    When *llm_client* is provided and auto_mode_llm_fallback is enabled,
+    low-confidence heuristic assessments are re-evaluated via a cheap LLM
+    call — enabling language-agnostic complexity routing.
     """
     enabled = True
     threshold = 0.6
@@ -253,4 +261,5 @@ def create_complexity_gate(config: "Config | None" = None) -> ComplexityGate:
         enabled=enabled,
         confidence_threshold=threshold,
         use_llm_fallback=use_llm,
+        llm_client=llm_client if use_llm else None,
     )

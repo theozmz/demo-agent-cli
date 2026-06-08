@@ -70,7 +70,7 @@ def handle_run(
     # ==================================================================
     # ComplexityGate — autonomous pre-flight assessment
     # ==================================================================
-    gate = create_complexity_gate(ctx.config)
+    gate = create_complexity_gate(ctx.config, llm_client=ctx.llm)
 
     selection = gate.assess_and_select(
         task=prompt_text,
@@ -172,6 +172,8 @@ def handle_run(
     def _on_event(ev: LoopEvent) -> None:
         if ev.kind == "thinking":
             console.print(f"[dim]Turn {ev.iteration} — thinking...[/dim]")
+        elif ev.kind == "llm_tokens":
+            console.print(f"  [dim]{ev.content}[/dim]")
         elif ev.kind == "retry":
             console.print(
                 f"[yellow]Retry {ev.retry_attempt}/{_MAX_RETRIES}: "
@@ -198,10 +200,16 @@ def handle_run(
             console.print(Markdown(outcome.content))
         elif outcome.kind == "error":
             console.print(f"[red]Error: {outcome.content}[/red]")
+        # Show token summary
+        token_info = ""
+        if hasattr(delegate, 'token_counter') and delegate.token_counter:
+            tc = delegate.token_counter
+            if tc.call_count > 0:
+                token_info = f" · {tc.format_summary()}"
         if debug:
             console.print(
                 f"\n[dim]Turns: {outcome.turns}, "
-                f"Duration: {outcome.duration_ms:.0f}ms[/dim]"
+                f"Duration: {outcome.duration_ms:.0f}ms{token_info}[/dim]"
             )
 
         # Log task end
@@ -334,13 +342,33 @@ def _run_langgraph(
         cwd=ctx.cwd,
     )
 
+    # Build agent topology for multi-agent modes
+    from harness.langgraph.topology import AgentTopology
+
+    _topo = AgentTopology.for_mode(delegate.mode) if delegate.mode in (
+        "multi_agent", "pair_coding"
+    ) else None
+
+    if _topo:
+        console.print(_topo.render())
+
     # Progress callback for real-time display
     def _on_event(ev: LoopEvent) -> None:
         if ev.kind == "thinking":
             console.print("[dim]LangGraph agent thinking...[/dim]")
+        elif ev.kind == "llm_tokens":
+            # Update topology with per-node token counts
+            if _topo and ev.tool_name:
+                try:
+                    in_tok, out_tok = _parse_token_event(ev.content)
+                    _topo.add_tokens(ev.tool_name, in_tok, out_tok)
+                except Exception:
+                    pass
+            console.print(f"  [dim]{ev.content}[/dim]")
         elif ev.kind == "tool_call":
             params_str = _format_params(ev.tool_input or {})
-            console.print(f"[cyan]→ {ev.tool_name}({params_str})[/cyan]")
+            node_hint = f"[{ev.tool_name}] " if ev.tool_name else ""
+            console.print(f"[cyan]→ {node_hint}{ev.tool_name}({params_str})[/cyan]")
         elif ev.kind == "tool_result":
             output = ev.tool_output
             if len(output) > _MAX_TOOL_DISPLAY:
@@ -348,7 +376,6 @@ def _run_langgraph(
             style = "red" if ev.tool_error else ""
             console.print(f"  {output}", style=style)
         elif ev.kind == "text":
-            # Streaming text chunks
             pass  # Too verbose for CLI; final output shown at end
         elif ev.kind == "done":
             pass  # Handled below
@@ -402,6 +429,32 @@ def _format_params(params: dict[str, Any]) -> str:
             s = s[:57] + "..."
         items.append(f"{k}={s}")
     return ", ".join(items)
+
+
+def _parse_token_event(content: str) -> tuple[int, int]:
+    """Parse token event content like '📊 2.1k in / 0.5k out [controller]' → (2100, 500)."""
+    import re
+
+    in_tok = out_tok = 0
+    m_in = re.search(r"(\d+\.?\d*)([kM]?)\s+in", content)
+    if m_in:
+        val = float(m_in.group(1))
+        unit = m_in.group(2)
+        if unit == "M":
+            val *= 1_000_000
+        elif unit == "k":
+            val *= 1_000
+        in_tok = int(val)
+    m_out = re.search(r"(\d+\.?\d*)([kM]?)\s+out", content)
+    if m_out:
+        val = float(m_out.group(1))
+        unit = m_out.group(2)
+        if unit == "M":
+            val *= 1_000_000
+        elif unit == "k":
+            val *= 1_000
+        out_tok = int(val)
+    return in_tok, out_tok
 
 
 def add_run_subparser(subparsers, shared_parent) -> None:

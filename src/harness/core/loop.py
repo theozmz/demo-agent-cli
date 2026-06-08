@@ -26,9 +26,11 @@ from harness.core.loop_delegate import (
 from harness.core.context import ContextGatherer
 from harness.core.compaction import CompactionEngine, CompactionStrategy, TruncationTracker
 from harness.core.errors import MaxTurnsReachedError
+from harness.core.token_counter import TokenCounter
 
 if TYPE_CHECKING:
     from harness.logging.task_logger import TaskLogger
+    from harness.cli.status import SessionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,8 @@ class ChatDelegate(LoopDelegate):
         self._workspace_root: str = ""
         # Progress callback — set by AgenticLoop before calling call_llm
         self._on_event: Callable[[LoopEvent], None] | None = None
+        self.token_counter: "TokenCounter | None" = None  # set by AgenticLoop
+        self._status: "SessionStatus | None" = None  # set by AgenticLoop
 
     async def check_signals(self) -> LoopSignal:
         return self._signal
@@ -186,6 +190,17 @@ class ChatDelegate(LoopDelegate):
                 )
                 duration_ms = (time.monotonic() - llm_start) * 1000
                 usage = response.usage
+                if self.token_counter and usage:
+                    self.token_counter.add(usage, model=getattr(self._llm, "model", ""))
+                # Emit per-call token info to CLI
+                if self._on_event and usage and self.token_counter:
+                    self._on_event(LoopEvent(
+                        kind="llm_tokens",
+                        iteration=iteration,
+                        content=self.token_counter.format_last_call(usage),
+                        signal_granularity=SignalGranularity.G3,
+                        attribution=AttributionDimension.MEMORY,
+                    ))
                 if _gen is not None and usage:
                     _gen.end(
                         output={"response_type": "tool_calls" if response.tool_calls else "text"},
@@ -288,6 +303,10 @@ class ChatDelegate(LoopDelegate):
                     signal_granularity=SignalGranularity.G2,
                     attribution=AttributionDimension.STRUCTURAL,
                 ))
+            if self._status:
+                inp = tc.input or {}
+                args_str = ", ".join(f"{k}={str(v)[:30]}" for k, v in list(inp.items())[:2])
+                self._status.current_instruction = f"→ {tc.name}({args_str})"
 
             try:
                 output = await self._tools.execute(tc.name, tc.input, tool_ctx)
@@ -308,6 +327,8 @@ class ChatDelegate(LoopDelegate):
                         signal_granularity=SignalGranularity.G2,
                         attribution=AttributionDimension.STRUCTURAL,
                     ))
+                if self._status:
+                    self._status.current_instruction = f"  ✗ {tc.name}"
                 if self._task_logger:
                     self._task_logger.log_attribution(
                         dimension="S", granularity="G2",
@@ -336,6 +357,9 @@ class ChatDelegate(LoopDelegate):
                     signal_granularity=gran,
                     attribution=AttributionDimension.STRUCTURAL,
                 ))
+            if self._status:
+                marker = "✗" if output.is_error else "←"
+                self._status.current_instruction = f"  {marker} {tc.name}"
             if self._task_logger:
                 gran_str = "G2" if tc.name in ("file_write", "file_edit", "bash_exec") else "G1"
                 self._task_logger.log_attribution(
@@ -413,6 +437,8 @@ class AgenticLoop:
                     signal_granularity=SignalGranularity.G3,
                     attribution=AttributionDimension.MEMORY,
                 ))
+            if self._status:
+                self._status.current_instruction = "compacting..."
             # Log to TaskLogger for persistent credit-assignment analysis
             if self.delegate and hasattr(self.delegate, '_task_logger') and self.delegate._task_logger:
                 self.delegate._task_logger.log_compaction(
@@ -429,20 +455,33 @@ class AgenticLoop:
     # ------------------------------------------------------------------
 
     async def run(
-        self, on_event: Callable[[LoopEvent], None] | None = None
+        self,
+        on_event: Callable[[LoopEvent], None] | None = None,
+        status: "SessionStatus | None" = None,
     ) -> LoopOutcome:
         """Execute the agent loop until completion or max turns.
 
         Args:
             on_event: Optional callback for real-time progress events.
+            status: Optional SessionStatus tracker for CLI status bar.
         """
         start_time = time.monotonic()
         iteration = 0
         final_text = ""
 
-        # Wire progress callback into the delegate
+        # Wire progress callback and status into the delegate
         if hasattr(self.delegate, '_on_event'):
             self.delegate._on_event = on_event
+        self._status = status
+        if status and hasattr(self.delegate, '_status'):
+            self.delegate._status = status
+
+        # Create TokenCounter and attach to delegate and status
+        _counter = TokenCounter()
+        if hasattr(self.delegate, 'token_counter'):
+            self.delegate.token_counter = _counter
+        if self._status:
+            self._status.token_counter = _counter
 
         # Create session-level langfuse trace
         from harness.observability import get_backend, NoopBackend
@@ -482,6 +521,9 @@ class AgenticLoop:
                         signal_granularity=SignalGranularity.G0,
                         attribution=AttributionDimension.STRUCTURAL,
                     ))
+                if self._status:
+                    self._status.current_instruction = "idle"
+                    self._status.current_turn = 0
                 _end_trace(outcome)
                 return outcome
 
@@ -494,6 +536,9 @@ class AgenticLoop:
                         signal_granularity=SignalGranularity.G0,
                         attribution=AttributionDimension.STRUCTURAL,
                     ))
+                if self._status:
+                    self._status.current_instruction = "idle"
+                    self._status.current_turn = 0
                 _end_trace(early)
                 return early
 
@@ -504,8 +549,13 @@ class AgenticLoop:
                     signal_granularity=SignalGranularity.G1,
                     attribution=AttributionDimension.PROMPT,
                 ))
+            if self._status:
+                self._status.current_instruction = f"Turn {iteration} — thinking..."
+                self._status.current_turn = iteration
             try:
                 response = await self.delegate.call_llm(self.ctx, iteration)
+                if self._status:
+                    self._status.context_tokens = self._estimate_tokens()
             except Exception as e:
                 logger.error(f"LLM call failed at iteration {iteration}: {e}")
                 outcome = LoopOutcome(
@@ -518,6 +568,9 @@ class AgenticLoop:
                         signal_granularity=SignalGranularity.G0,
                         attribution=AttributionDimension.STRUCTURAL,
                     ))
+                if self._status:
+                    self._status.current_instruction = "idle"
+                    self._status.current_turn = 0
                 _end_trace(outcome)
                 return outcome
 
@@ -534,6 +587,9 @@ class AgenticLoop:
                             signal_granularity=SignalGranularity.G0,
                             attribution=AttributionDimension.STRUCTURAL,
                         ))
+                    if self._status:
+                        self._status.current_instruction = "idle"
+                        self._status.current_turn = 0
                     _end_trace(outcome)
                     return outcome
             else:
@@ -553,6 +609,9 @@ class AgenticLoop:
                             signal_granularity=SignalGranularity.G0,
                             attribution=AttributionDimension.PROMPT,
                         ))
+                    if self._status:
+                        self._status.current_instruction = "idle"
+                        self._status.current_turn = 0
                     _end_trace(outcome)
                     return outcome
 
@@ -573,5 +632,8 @@ class AgenticLoop:
                 signal_granularity=SignalGranularity.G0,
                 attribution=AttributionDimension.STRUCTURAL,
             ))
+        if self._status:
+            self._status.current_instruction = "idle"
+            self._status.current_turn = 0
         _end_trace(outcome)
         return outcome

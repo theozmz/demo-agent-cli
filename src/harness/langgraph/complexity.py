@@ -12,9 +12,17 @@ Complexity tiers map to model selection:
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from harness.llm.client import LlmClient
+
+logger = logging.getLogger(__name__)
 
 
 class ComplexityTier(str, Enum):
@@ -73,12 +81,45 @@ class ComplexityAssessor:
         r"\b(monolith|microservice.architecture|system.design)\b",
     ]
 
+    # Chinese patterns — no \b anchors since CJK chars are not \w in Python re.
+    # Substring matching is safe: Chinese task descriptions are dense, and the
+    # scoring algorithm's max() + confidence threshold naturally handles noise.
+    # Chinese patterns use short, independent keywords rather than compound phrases.
+    # CJK text often mixes Chinese with English/code (e.g. "修正 README 中的拼写"),
+    # so requiring adjacency (like "修正拼写") misses valid matches. Each keyword
+    # stands alone as a signal for its tier.
+    CN_SIMPLE_PATTERNS: list[str] = [
+        r"重命名|格式化|加注释|修正|错别字|拼写|更新文档",
+        r"添加测试|单个函数|单个文件|简单修复|小改动",
+        r"打印|日志|调试|类型注解|类型标注",
+        r"增删改查|模板代码|脚手架|样板代码|基础",
+    ]
+    CN_INTEGRATION_PATTERNS: list[str] = [
+        r"多个文件|多文件|API|接口|端点|接口开发",
+        r"重构|迁移|集成|跨模块|多模块|跨服务",
+        r"数据库|数据模型|查询|ORM|模型关系|表结构",
+        r"REST|GraphQL|WebSocket|微服务|消息队列",
+        r"翻译|移植|转换|跨语言|跨平台",
+    ]
+    CN_ARCHITECTURE_PATTERNS: list[str] = [
+        r"系统设计|架构设计|微服务架构|单体架构|分布式|高可用|容灾",
+        r"认证系统|鉴权|权限系统|权限控制|权限管理|访问控制",
+        r"数据模型|模式变更|架构变更|部署方案|性能优化|性能调优",
+        r"并发|锁|事务|竞态条件|竞争条件|死锁",
+        r"实时通知|通知系统|消息推送|消息队列架构",
+        r"OAuth|单点登录|SSO|加密|解密|令牌|JWT|RBAC",
+        r"基于角色|授权|身份验证|登录系统|关键路径",
+        r"安全|架构|设计|认证",
+    ]
+
     # Thresholds
     CONFIDENCE_THRESHOLD: float = 0.7
     DEFAULT_CONFIDENCE: float = 0.5
 
-    def __init__(self, confidence_threshold: float = 0.7):
+    def __init__(self, confidence_threshold: float = 0.7,
+                 llm_client: "LlmClient | None" = None):
         self.CONFIDENCE_THRESHOLD = confidence_threshold
+        self._llm = llm_client
         # Pre-compile regex patterns
         self._simple_re = re.compile(
             "|".join(self.SIMPLE_PATTERNS), re.IGNORECASE
@@ -88,6 +129,15 @@ class ComplexityAssessor:
         )
         self._architecture_re = re.compile(
             "|".join(self.ARCHITECTURE_PATTERNS), re.IGNORECASE
+        )
+        self._cn_simple_re = re.compile(
+            "|".join(self.CN_SIMPLE_PATTERNS)
+        )
+        self._cn_integration_re = re.compile(
+            "|".join(self.CN_INTEGRATION_PATTERNS)
+        )
+        self._cn_architecture_re = re.compile(
+            "|".join(self.CN_ARCHITECTURE_PATTERNS)
         )
 
     # ------------------------------------------------------------------
@@ -114,10 +164,81 @@ class ComplexityAssessor:
         if heuristic.confidence >= self.CONFIDENCE_THRESHOLD or not use_llm:
             return heuristic
 
-        # LLM pass would go here — requires LlmClient injection.
-        # For now, return heuristic with a note.
-        heuristic.reasoning += " (LLM pass skipped: no client configured)"
-        return heuristic
+        if self._llm is None:
+            heuristic.reasoning += " (LLM pass skipped: no client configured)"
+            return heuristic
+
+        try:
+            return self._llm_assess(task, plan, heuristic)
+        except Exception as exc:
+            logger.warning("LLM complexity assessment failed: %s — using heuristic", exc)
+            heuristic.reasoning += f" (LLM pass failed: {exc})"
+            return heuristic
+
+    def _llm_assess(
+        self, task: str, plan: str, heuristic: ComplexityAssessment
+    ) -> ComplexityAssessment:
+        """LLM-based assessment — language-agnostic, works for any natural language.
+
+        Called when the heuristic has low confidence. Uses a cheap model to
+        classify the task into one of three tiers. The prompt is designed to
+        work across languages since the LLM itself is multilingual.
+        """
+        import asyncio
+
+        prompt = f"""Classify this software engineering task into exactly one complexity tier.
+
+Task: {task}
+{f"Context: {plan}" if plan else ""}
+
+Tiers:
+- simple: 1-2 files, rename/typo/format, single function, basic CRUD, boilerplate
+- integration: multiple files, API/endpoint, refactor, migrate, database, REST/GraphQL
+- architecture: design, security, auth/OAuth, concurrency, system architecture, RBAC
+
+Respond with ONLY a JSON object, no other text:
+{{"tier": "<tier>", "confidence": <0.0-1.0>, "reason": "<one sentence>"}}"""
+
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        response = loop.run_until_complete(
+            self._llm.generate(
+                messages=[{"role": "user", "content": prompt}],
+                system_prompt="You are a task complexity classifier. Output only JSON.",
+                tools=None,
+            )
+        )
+
+        text = (response.text or "").strip()
+        # Extract JSON from response (handle markdown code blocks)
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.split("```")[0].strip()
+
+        data = json.loads(text)
+        tier_str = data.get("tier", "integration").lower()
+        tier_map = {
+            "simple": ComplexityTier.SIMPLE,
+            "integration": ComplexityTier.INTEGRATION,
+            "architecture": ComplexityTier.ARCHITECTURE,
+        }
+        tier = tier_map.get(tier_str, ComplexityTier.INTEGRATION)
+        confidence = float(data.get("confidence", 0.6))
+
+        return ComplexityAssessment(
+            tier=tier,
+            confidence=min(max(confidence, 0.0), 1.0),
+            reasoning=f"LLM: {data.get('reason', '')} (heuristic was: {heuristic.reasoning})",
+            recommended_model=self._model_for_tier(tier),
+            estimated_file_count=self._estimate_file_count(tier),
+            estimated_tool_calls=self._estimate_tool_calls(tier),
+        )
 
     def assess_batch(
         self,
@@ -141,9 +262,12 @@ class ComplexityAssessor:
         combined = f"{task} {plan}"
 
         scores = {
-            ComplexityTier.SIMPLE: len(self._simple_re.findall(combined)),
-            ComplexityTier.INTEGRATION: len(self._integration_re.findall(combined)),
-            ComplexityTier.ARCHITECTURE: len(self._architecture_re.findall(combined)),
+            ComplexityTier.SIMPLE: len(self._simple_re.findall(combined))
+                                  + len(self._cn_simple_re.findall(combined)),
+            ComplexityTier.INTEGRATION: len(self._integration_re.findall(combined))
+                                      + len(self._cn_integration_re.findall(combined)),
+            ComplexityTier.ARCHITECTURE: len(self._architecture_re.findall(combined))
+                                       + len(self._cn_architecture_re.findall(combined)),
         }
 
         total = sum(scores.values())

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from harness.llm.client import LlmClient
 from harness.llm.types import ChatMessage, LlmResponse
@@ -15,6 +15,9 @@ from harness.tools.executor import ToolExecutor
 from harness.core.loop import AgenticLoop, ChatDelegate, LoopConfig
 from harness.core.loop_delegate import LoopContext, LoopOutcome
 from harness.core.context import ContextGatherer
+
+if TYPE_CHECKING:
+    from harness.cli.status import SessionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,7 @@ class SubAgentManager:
         self._cfg = config or SubAgentConfig()
         self._active: set[str] = set()
         self._total_spawned = 0
+        self._status: "SessionStatus | None" = None
 
     @property
     def total_spawned(self) -> int:
@@ -91,6 +95,9 @@ class SubAgentManager:
         self._total_spawned += 1
         tag = f"sub-{self._total_spawned}"
         self._active.add(tag)
+
+        if self._status:
+            self._status.subagent_start(tag, task)
 
         try:
             # Build restricted tool registry (whitelist)
@@ -132,6 +139,9 @@ class SubAgentManager:
 
             outcome = await asyncio.wait_for(_run_sub(), timeout=cfg.timeout_seconds)
 
+            if self._status:
+                self._status.subagent_end(tag, outcome.kind)
+
             return SubAgentResult(
                 content=outcome.content or "",
                 turns=outcome.turns,
@@ -141,6 +151,8 @@ class SubAgentManager:
 
         except asyncio.TimeoutError:
             logger.warning("Sub-agent %s timed out after %ds", tag, cfg.timeout_seconds)
+            if self._status:
+                self._status.subagent_end(tag, "timeout")
             return SubAgentResult(content="Sub-agent timed out.", outcome_kind="error")
         finally:
             self._active.discard(tag)

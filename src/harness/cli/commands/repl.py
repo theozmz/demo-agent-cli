@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from harness.cli.context import AppContext
+from harness.cli.status import SessionStatus, format_status_bar
 from harness.llm.types import ChatMessage
 from harness.logging.task_logger import TaskLogger
 
@@ -183,8 +184,10 @@ async def _repl_loop(
         )
         repl_logger.close()
 
-        if debug:
-            console.print(f"\n[dim]Exit {proc.returncode} · {duration_ms:.0f}ms[/dim]")
+        console.print(
+            f"[dim]--- Task {task_num} {outcome} · {duration_ms:.0f}ms "
+            f"· exit {proc.returncode} ---[/dim]"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -202,9 +205,23 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
     blocks = ctx.context_gatherer.gather()
     system_prompt = ctx.context_gatherer.to_system_prompt(blocks)
 
+    # Create session-level status tracker
+    session_status = SessionStatus(model=ctx.config.llm.model)
+
+    # Wire sub-agent manager for status tracking
+    agent_tool = ctx.tool_registry.get("agent")
+    if agent_tool is not None and hasattr(agent_tool, '_manager'):
+        agent_tool._manager._status = session_status
+
+    def _make_toolbar(status_ref: SessionStatus):
+        def _toolbar():
+            return format_status_bar(status_ref, console.width or 80)
+        return _toolbar
+
     prompt_session = PromptSession(
         history=FileHistory(str(_history_path())),
         style=REPL_STYLE,
+        bottom_toolbar=_make_toolbar(session_status),
     )
 
     while True:
@@ -227,9 +244,11 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
         session_id = str(uuid.uuid4())
         task_logger = TaskLogger(session_id=session_id)
 
-        # Real-time progress display (with truncation)
         def _on_repl_event(ev: LoopEvent) -> None:
+            # Update shared status
             if ev.kind == "thinking":
+                session_status.current_instruction = f"Turn {ev.iteration} — thinking..."
+                session_status.current_turn = ev.iteration
                 console.print(f"[dim]Turn {ev.iteration} — thinking...[/dim]")
             elif ev.kind == "retry":
                 console.print(
@@ -241,13 +260,29 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
                 params_str = ", ".join(
                     f"{k}={str(v)[:50]}" for k, v in list(p.items())[:3]
                 )
+                session_status.current_instruction = f"→ {ev.tool_name}({params_str})"
                 console.print(f"[cyan]→ {ev.tool_name}({params_str})[/cyan]")
             elif ev.kind == "tool_result":
                 output = ev.tool_output
                 if len(output) > 400:
                     output = output[:400] + f"\n...<truncated {len(ev.tool_output) - 400} chars>"
                 style = "red" if ev.tool_error else ""
+                marker = "✗" if ev.tool_error else "←"
+                session_status.current_instruction = f"  {marker} {ev.tool_name}"
                 console.print(f"  {output}", style=style)
+            elif ev.kind == "llm_tokens":
+                # Token info already logged by ChatDelegate, update status context
+                if session_status.token_counter:
+                    session_status.context_tokens = session_status.token_counter.total
+            elif ev.kind == "compact":
+                session_status.current_instruction = "compacting..."
+            elif ev.kind == "done":
+                session_status.current_instruction = "idle"
+                session_status.current_turn = 0
+
+            # Print compact status bar after each event
+            status_line = format_status_bar(session_status, console.width or 80)
+            console.print(f"[dim]{status_line}[/dim]")
 
         delegate = ChatDelegate(
             llm=ctx.llm,
@@ -281,10 +316,15 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
         start = time.monotonic()
         try:
             outcome = asyncio.run(
-                asyncio.wait_for(loop.run(on_event=_on_repl_event), timeout=3600)
+                asyncio.wait_for(
+                    loop.run(on_event=_on_repl_event, status=session_status),
+                    timeout=3600,
+                )
             )
         except asyncio.TimeoutError:
             console.print("[yellow]Turn timed out after 1 hour.[/yellow]")
+            session_status.current_instruction = "idle"
+            session_status.current_turn = 0
             task_logger.log_task_end(
                 outcome="timeout",
                 total_duration_ms=(time.monotonic() - start) * 1000,
@@ -294,6 +334,8 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
             continue
         except Exception as exc:
             console.print(f"[red]Unexpected error: {exc}[/red]")
+            session_status.current_instruction = "idle"
+            session_status.current_turn = 0
             task_logger.log_task_end(
                 outcome="error",
                 total_duration_ms=(time.monotonic() - start) * 1000,
@@ -303,6 +345,8 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
             continue
 
         duration_ms = (time.monotonic() - start) * 1000
+
+        session_status.snapshot_totals()
 
         if outcome.content:
             console.print(Markdown(outcome.content))
@@ -321,7 +365,16 @@ def _handle_repl_inprocess(ctx: AppContext, debug: bool) -> None:
         task_logger.close()
 
         if debug:
-            console.print(f"\n[dim]T{outcome.turns} · {outcome.duration_ms:.0f}ms[/dim]")
+            token_info = ""
+            if hasattr(delegate, 'token_counter') and delegate.token_counter:
+                tc = delegate.token_counter
+                if tc.call_count > 0:
+                    token_info = f" · {tc.format_summary()}"
+            console.print(f"\n[dim]T{outcome.turns} · {outcome.duration_ms:.0f}ms{token_info}[/dim]")
+
+        # Print final status bar after turn completes
+        status_line = format_status_bar(session_status, console.width or 80)
+        console.print(f"[dim]{status_line}[/dim]")
 
         if len(messages) > 50:
             messages = messages[-40:]

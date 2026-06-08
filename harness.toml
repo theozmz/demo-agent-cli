@@ -17,19 +17,10 @@ auto_mode_llm_fallback = false
 runtime = "docker"
 
 [repomap]
-enabled = false
+enabled = true
 
 [cache]
-warm_enabled = false
+warm_enabled = true
 
 [observability]
 backend = "none"
-# Langfuse connection (set backend = "langfuse" and configure below)
-# langfuse_public_key = "pk-..."
-# langfuse_secret_key = "sk-..."
-# langfuse_host = "http://localhost:3000"
-# Evaluation LLM (used by ragas metrics — cost-effective model recommended)
-# eval_llm_provider = "openai"
-# eval_llm_model = "gpt-4o-mini"
-# eval_llm_api_key = "sk-..."
-# eval_llm_api_base = ""
